@@ -129,12 +129,14 @@ const IMAGE_TYPES = {
 };
 
 /**
- * Write demo-assets.ts beside the tree: the images Kestrel's seed takes as files, as static
- * imports the Worker bundles (wrangler's Data rule makes each an ArrayBuffer). Every image
- * beside a post's index.md, named `<bundle>/<file>`, and the logo publication.md names. That
- * is a superset of what Kestrel's scripts/seed.mjs uploads (only the images a post shows),
- * which is harmless: the seed looks each image up by the name its post uses and ignores the
- * rest. Generated, so a release that adds or renames a demo image needs no change here.
+ * Write demo-assets.ts beside the tree: what the Worker bundles from Kestrel's repo besides
+ * its code, as static imports. The images Kestrel's seed takes as files, which wrangler's
+ * Data rule makes ArrayBuffers: every image beside a post's index.md, named
+ * `<bundle>/<file>`, and the logo publication.md names. That is a superset of what Kestrel's
+ * scripts/seed.mjs uploads (only the images a post shows), which is harmless: the seed looks
+ * each image up by the name its post uses and ignores the rest. And its migrations/*.sql, as
+ * text, in name order. Generated, so a release that adds a demo image or a migration needs
+ * no change here.
  */
 function writeDemoAssets() {
   const demo = join(DIR, "demo");
@@ -165,6 +167,15 @@ function writeDemoAssets() {
   const front = readFileSync(join(demo, "publication.md"), "utf8").match(/^---\n([\s\S]*?)\n---/);
   const logo = front?.[1].match(/^logo:\s*(.+?)\s*$/m)?.[1];
   let logoExport = "export const demoLogo = undefined;";
+  const migrations = [];
+  const migrationsDir = join(DIR, "migrations");
+  for (const file of readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    const name = `migration${migrations.length}`;
+    imports.push(`import ${name} from ${JSON.stringify(rel(join(migrationsDir, file)))};`);
+    migrations.push(`  { name: ${JSON.stringify(file)}, sql: ${name} },`);
+  }
   if (logo && typeOf(logo) && existsSync(join(demo, logo))) {
     imports.push(`import logo from ${JSON.stringify(rel(join(demo, logo)))};`);
     logoExport = `export const demoLogo = { contentType: ${JSON.stringify(typeOf(logo))}, bytes: logo };`;
@@ -177,6 +188,7 @@ function writeDemoAssets() {
       "",
       `export const demoImages = [\n${images.join("\n")}\n];`,
       logoExport,
+      `export const migrations = [\n${migrations.join("\n")}\n];`,
       "",
     ].join("\n"),
   );

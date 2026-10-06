@@ -12,6 +12,8 @@
     // Kestrel imports its demo posts and setup docs as text. Its css-inline .wasm import needs
     // nothing here: wrangler's default CompiledWasm rule covers **/*.wasm.
     { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+    // Kestrel's migrations, applied inside each sandbox (src/d1/migrate.ts).
+    { "type": "Text", "globs": ["**/*.sql"] },
     // The seed's demo images, as ArrayBuffers (vendor/demo-assets.ts).
     {
       "type": "Data",
@@ -39,6 +41,9 @@
     }
   ],
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "kestrel-demo-media-dev" }],
+  // One SQLite-backed Durable Object per visitor (DESIGN.md, "Architecture").
+  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "SandboxDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxDO"] }],
   "vars": {
     // The origin Kestrel's links use. Production sets https://demo.getkestrel.dev (#10).
     "APP_ORIGIN": "http://localhost:8788"
