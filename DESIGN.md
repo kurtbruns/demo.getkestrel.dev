@@ -15,11 +15,11 @@ Non-goals:
 
 - Persisting anything a visitor makes beyond the idle TTL.
 - Letting visitors share what they made. That is a deliberate limitation, not a missing feature (see "The safety property").
-- Changing Kestrel's behavior for self-hosters. Kestrel gains only small, general seams.
+- Changing Kestrel for self-hosters. Kestrel gains nothing for the demo's sake: what the demo needs that Kestrel doesn't have is a small patch in this repo (see "The patch set").
 
 ## Why a separate repo
 
-getkestrel.dev is a static Hugo site that owns no data. Adding a stateful Worker with Durable Objects, R2 and per-visitor storage to it would muddle its deploy, its CI and its purpose. Kestrel itself should stay small and legible for self-hosters, who have no use for sandbox infrastructure. So the demo lives here, as a thin wrapper around a pinned Kestrel release. Anything Kestrel needs to make that wrapper possible is filed as a small, general issue in the kestrel repo and linked from this repo's issues. The website-side work (the DNS route, the "Try the live demo" CTA, the hero frame linking here) stays in kurtbruns/getkestrel.dev#16.
+getkestrel.dev is a static Hugo site that owns no data. Adding a stateful Worker with Durable Objects, R2 and per-visitor storage to it would muddle its deploy, its CI and its purpose. Kestrel itself should stay small and legible for self-hosters, who have no use for sandbox infrastructure. So the demo lives here, as a thin wrapper around a pinned Kestrel release. What the wrapper needs Kestrel to do differently is a small patch set in this repo, applied to the pinned release at build time, so Kestrel ships nothing that only the demo uses. The website-side work (the DNS route, the "Try the live demo" CTA, the hero frame linking here) stays in kurtbruns/getkestrel.dev#16.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ browser ──► demo Worker (this repo)
               └─ alarm()   → kestrel.default.scheduled(controller, sandboxEnv, ctx), plus idle-TTL cleanup
 ```
 
-The wrapper does not fork Kestrel. It imports Kestrel's own default export (`src/index.ts`, an `ExportedHandler` with `fetch(request, env, ctx)` and `scheduled(controller, env, ctx)`) and calls it with a sandboxed `env`. Kestrel reads every binding off `env` per request (`routerFor(env)` builds and caches the router from `getConfig(env)`; every `db/` function takes `env.DB` as an argument), so swapping the bindings is enough to swap the world it runs in.
+The wrapper doesn't fork Kestrel's repo. It builds a pinned Kestrel release plus a small patch set (see "The patch set"), imports that build's own default export (`src/index.ts`, an `ExportedHandler` with `fetch(request, env, ctx)` and `scheduled(controller, env, ctx)`), and calls it with a sandboxed `env`. Kestrel reads every binding off `env` per request (`routerFor(env)` builds and caches the router from `getConfig(env)`; every `db/` function takes `env.DB` as an argument), so swapping the bindings is enough to swap the world it runs in.
 
 ### Request flow
 
@@ -65,7 +65,7 @@ This is the main reason for the per-visitor design over a single shared demo ins
 
 ### Version pin
 
-`.kestrel-version` holds the Kestrel release tag the demo runs (starting at `v1.2.0`), mirroring getkestrel.dev's `.kestrel-docs-version`. The build fetches Kestrel at exactly that tag (a shallow clone into a gitignored `vendor/kestrel/`, or a git dependency; the scaffold issue picks one) and builds:
+`.kestrel-version` holds the Kestrel release tag the demo runs (starting at `v1.2.0`), mirroring getkestrel.dev's `.kestrel-docs-version`. The build makes a shallow clone of Kestrel at exactly that tag into a gitignored `vendor/kestrel/`, applies the patch set, runs Kestrel's own `npm ci`, and builds:
 
 - the Worker code, which the wrapper imports from Kestrel's `src/`;
 - Kestrel's admin client (`scripts/build-client.mjs`: `public/` + `client/` → `dist/public`), which the demo serves as its static assets;
@@ -73,9 +73,36 @@ This is the main reason for the per-visitor design over a single shared demo ins
 
 The demo's wrangler config has to carry what Kestrel's does for its code to bundle: the `Text` rule for `**/*.md` (the demo posts and the setup docs are imported as text), the css-inline WASM module, and `nodejs_compat`.
 
+A clone rather than a git dependency (`github:kurtbruns/kestrel#v1.2.0`), because npm installs a git dependency without its devDependencies (Kestrel's client build needs esbuild) and without `.git` (so the build stamp would read `dev` instead of the tag), and because a patch set needs a working tree to apply to. It mirrors how getkestrel.dev's CI clones Kestrel at `.kestrel-docs-version`.
+
+### The patch set
+
+`patches/` holds a few small `git` patches against the pinned tag. The build applies them in filename order right after cloning (`git apply`), before anything is built. A patch that doesn't apply cleanly stops the build, so a Kestrel release that changes the patched lines fails loudly in the PR that bumps `.kestrel-version`, never quietly in production. CI applies them on every PR.
+
+Rules for a patch:
+
+- One concern per patch, named for it (`0001-demo-auth.patch`), with a header comment that says what it changes, why the demo needs it, and which issue added it.
+- As small as the concern allows. A patch changes behavior only where the demo needs it to, and touches no invariant from Kestrel's `docs/SPEC.md` (the send state machine, the single render path, the consent rules).
+- If a fix is one self-hosters would want too, it goes upstream as a Kestrel issue instead, and the patch is dropped once a release carries it.
+
+Planned patches:
+
+| Patch | What it changes | Issue |
+| --- | --- | --- |
+| demo auth | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request, and `whoami` reports `auth.mode: "demo"` | #2 |
+| fake outbox bound | caps the fake transport's and the fake notifier's in-memory outboxes and the idempotency map | #6 |
+| demo chrome | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
+
+Why a patch set, over the two alternatives considered:
+
+- **A seam in Kestrel** (an exported `createHandler({ authenticate })`, briefly filed as kurtbruns/kestrel#471 and closed): general and tested upstream, but it would make Kestrel ship, document and maintain an extension point whose only consumer is this demo, which cuts against keeping Kestrel small for self-hosters.
+- **A full fork** (a `kestrel-demo` repo or long-lived branch): no build-time machinery, but every release becomes a merge in a second repo with its own history and CI, which is a lot of process for a few dozen changed lines.
+
+The cost of patches is that they touch Kestrel's internals, so a refactor upstream can break them; they fail at build, which is the right place. The demo is then "Kestrel at the pinned tag plus these patches", and the patch list is short enough to read in full.
+
 ### Updating the demo
 
-When Kestrel cuts a release: bump `.kestrel-version`, rebuild, run the demo's checks (the D1 adapter suite against the new migrations, the isolation tests, a seed smoke test), and redeploy. Existing sandboxes were migrated at the old version. The DO records the Kestrel version and migration list it applied, and a sandbox from an older version is reset on its next request rather than migrated in place: sandboxes are disposable, and a reset is always correct. The procedure lives in a skill or a documented script, like getkestrel.dev's `refresh-from-kestrel`.
+When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies the patch set; fix or drop any patch that no longer applies, or that the release made unnecessary), run the demo's checks (the D1 adapter suite against the new migrations, the isolation tests, a seed smoke test), and redeploy. Existing sandboxes were migrated at the old version. The DO records the Kestrel version and migration list it applied, and a sandbox from an older version is reset on its next request rather than migrated in place: sandboxes are disposable, and a reset is always correct. The procedure lives in a skill or a documented script, like getkestrel.dev's `refresh-from-kestrel`.
 
 ### The D1-compatible adapter
 
@@ -93,20 +120,17 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild, run the demo's ch
 
 The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images (`demo/posts/*/*.webp`, `demo/field-notes-logo.png`) are passed in as files, which the wrapper bundles from the pinned checkout. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
 
-### Auth (the one place the chosen design had to change)
+### Auth
 
 The original plan was to run the sandbox in Kestrel's `dev` auth mode. That doesn't work, by design. `getConfig` (`src/env.ts`) only resolves `devAuthSecret` in a "dev-shaped" env: fake provider, no Access team domain, **and a loopback `APP_ORIGIN`** (`localhost` or `127.0.0.1`). With `APP_ORIGIN=https://demo.getkestrel.dev`, `devMode` is false, so the `/api/dev/*` routes (including `/api/dev/token`, the editor's token bootstrap in `client/main.ts`) are not registered, bearer tokens are ignored, and every admin route answers 401. The `src/app.ts` line that reports `auth.mode` as `dev` whenever Access is unconfigured is only the `whoami` label; the gate itself is closed.
 
-Two ways through, in order of preference:
+The demo-auth patch opens it for the sandbox only: `authenticate` in `src/auth/middleware.ts` returns a human principal (e.g. `demo@getkestrel.dev`) for every request, and `GET /api/whoami` reports `auth.mode: "demo"`. That is correct here, and only here, because a request reaches a sandbox's Kestrel only through its owner's cookie (see "The safety property"): whoever holds the cookie is that sandbox's publisher. Everything else in Kestrel's gate stays as shipped: `devMode` is still false, so the `/api/dev/*` routes stay absent; admin writes still refuse cross-site requests; admin responses are still `no-store`. The client boots unchanged: with no token it tries `/api/dev/token`, gets a 404, and the `whoami` probe then succeeds without a header.
 
-1. **A Kestrel seam for an embedding host (recommended).** Kestrel exports a handler factory that takes an optional authenticator, `(request, env, config) => Promise<Principal | null>`, used in place of the Access/dev pair, and `whoami` reports its mode (for example `"embedded"`), so the client shows a "Demo sandbox" identity chip rather than "Local dev" or a sign-out link. The default export stays exactly as it is for self-hosters. In the sandbox, the authenticator returns a human principal for every request, which is correct because a request only reaches the DO through its owner's cookie. The client needs no change to boot: with no token it tries `/api/dev/token`, gets a 404, and the `whoami` probe then succeeds without a header. This is tracked as a kestrel-repo issue linked from the spike.
-2. **A loopback-origin shim (fallback, no Kestrel change).** Give the sandbox env `APP_ORIGIN=http://localhost`, `ARCHIVE_ORIGIN=https://demo.getkestrel.dev`, `MEDIA_PUBLIC_BASE=https://demo.getkestrel.dev/media`, and a per-sandbox random `DEV_AUTH_SECRET`. That makes the env dev-shaped, so the editor mints its own token as it does locally. The wrapper must then block every `/api/dev/*` route except `token`, and audit what else still emits `APP_ORIGIN` links. It works against v1.2.0 as shipped, but it impersonates the very predicate Kestrel uses as its "this is local dev" fence, so it is a stopgap at best.
-
-The spike issue proves one of these end to end. The design assumes (1) and keeps (2) as the way to unblock the spike if the Kestrel seam isn't released yet.
+Rejected along the way: a loopback-origin shim (`APP_ORIGIN=http://localhost` with `ARCHIVE_ORIGIN` and `MEDIA_PUBLIC_BASE` pointed at the real host and a per-sandbox `DEV_AUTH_SECRET`), which works against v1.2.0 unpatched but impersonates the very predicate Kestrel uses to fence local dev, and re-exposes the dev routes the wrapper would then have to block.
 
 ### Static assets and demo chrome
 
-Kestrel serves `/dashboard/` from Workers static assets (`assets.directory: ./dist/public`, `not_found_handling: none`), which bypass the Worker. The demo serves the same built tree the same way. Since the shell is identical for every visitor, serving it from assets doesn't weaken the safety property. To inject the demo banner ("Sandbox: your changes are private and reset after 24h") and a "Reset demo" control, either route the dashboard's `index.html` through the Worker (`assets.run_worker_first` for that path) and rewrite it with `HTMLRewriter`, or add the snippet to the copied `index.html` at build time. Kestrel's own server-rendered public pages (`/`, `/archive/*`) pass through the DO, so `HTMLRewriter` can add the banner there.
+Kestrel serves `/dashboard/` from Workers static assets (`assets.directory: ./dist/public`, `not_found_handling: none`), which bypass the Worker. The demo serves the same built tree the same way. Since the shell is identical for every visitor, serving it from assets doesn't weaken the safety property. The demo banner ("Sandbox: your changes are private and reset after 24h"), the "Reset demo" button and the "Demo" identity chip are the demo-chrome patch: in Kestrel's admin client, keyed on `auth.mode === "demo"`, and in the page chrome of Kestrel's server-rendered public pages (`/`, `/archive/*`). That keeps them in Kestrel's own markup and CSS tokens rather than injected from outside. The reset button posts to the wrapper's reset route (see "Lifecycle").
 
 ## Media
 
@@ -132,7 +156,7 @@ DOs of one class can share an isolate, so anything Kestrel keeps at module scope
 - `providers/simulate.ts`: the simulation's maps (inert here, since the simulation only engages when dev-shaped).
 - `index.ts`'s router cache and `auth/access.ts`'s JWKS cache, which hold config, not visitor data.
 
-None of this is reachable over HTTP outside dev mode (the outbox is read only by `/api/dev/outbox`), so it is not a cross-sandbox read, but the outboxes are an unbounded memory leak. The fake transport's idempotency map also ignores which sandbox a key came from, though keys embed per-sandbox send ids, so they can't collide. The fix is a small Kestrel seam (a bound on the fake outboxes, or exported clear functions), tracked as a kestrel-repo issue. Until then, the wrapper clears them after each sweep through deep imports from the pinned tag.
+None of this is reachable over HTTP outside dev mode (the outbox is read only by `/api/dev/outbox`), so it is not a cross-sandbox read, but the outboxes are an unbounded memory leak. The fake transport's idempotency map also ignores which sandbox a key came from, though keys embed per-sandbox send ids, so they can't collide. The fake-outbox-bound patch caps the two outboxes and the idempotency map at a fixed size, keeping the newest entries. (Briefly filed upstream as kurtbruns/kestrel#470 and closed: only the demo runs the fake transport in a long-lived production isolate.)
 
 ## Lifecycle
 
@@ -156,9 +180,7 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 
 ## Open questions
 
-- **Auth seam shape.** Does Kestrel accept an authenticator option on an exported handler factory, and what `whoami` mode and identity chip should it report? Until it ships, is the loopback shim acceptable for a public deploy, or only for the spike?
-- **How the wrapper consumes Kestrel.** A git dependency (`github:kurtbruns/kestrel#v1.2.0`) runs Kestrel's `postinstall` and keeps imports tidy, but pulls its dev tooling. A build-time shallow clone into `vendor/` is explicit and mirrors getkestrel.dev's docs sync. The scaffold issue decides.
-- **Deep imports.** The seed (`src/dev/seed.ts`), `getConfig`, and the fake outbox clears are not part of Kestrel's default export. Importing them from a pinned tag is safe, but they're internal paths that can move between releases. Should Kestrel export a small "embedding" entry point that names them?
+- **Deep imports.** The seed (`src/dev/seed.ts`) and `getConfig` are not part of Kestrel's default export. Importing them from a pinned tag is safe, but they're internal paths that can move between releases. Import them directly, or have a patch add one small re-export module so the wrapper's imports from Kestrel live in one place?
 - **Alarm cadence vs. cost.** Is "every minute only while a send is scheduled or in flight" enough to keep a demo send live, or should the alarm also run while the visitor is active?
 - **Uploads.** Enable capped per-session uploads at launch, or ship with uploads disabled?
 - **Landing.** Should `/` stay Kestrel's public landing page (the visitor's own sandbox), or redirect first-time visitors to `/dashboard/`? Kestrel's rule that no public page links into an admin path is about Access-gated deploys, but the demo banner can offer the way in either way.

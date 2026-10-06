@@ -4,8 +4,16 @@ This repo is the live demo of Kestrel at demo.getkestrel.dev: a thin Cloudflare 
 
 ## Related repos
 
-- **Kestrel** (github.com/kurtbruns/kestrel) is the app being demoed. The demo imports it at the tag in `.kestrel-version` and never forks it. When the demo needs something from Kestrel, file a small, general issue in the kestrel repo and link it from the issue here, rather than patching around Kestrel in this repo. If there's a local checkout at `~/Git/kestrel`, it may be on another branch: read it with `git show <tag>:<path>` and `git grep <pattern> <tag>`, and never switch its branch.
+- **Kestrel** (github.com/kurtbruns/kestrel) is the app being demoed. The build clones it at the tag in `.kestrel-version` into the gitignored `vendor/kestrel/` and applies the patches in `patches/`. Never edit `vendor/` by hand; change a patch instead. If there's a local checkout at `~/Git/kestrel`, it may be on another branch: read it with `git show <tag>:<path>` and `git grep <pattern> <tag>`, and never switch its branch.
 - **getkestrel.dev** (github.com/kurtbruns/getkestrel.dev) is the static marketing site. Its issue #16 tracks the demo from the website side (the DNS route, the "Try the live demo" CTA). Don't add demo infrastructure there.
+
+## Patches
+
+What the demo needs Kestrel to do differently is a patch in `patches/`, not a Kestrel change, so Kestrel ships nothing only the demo uses. `DESIGN.md` ("The patch set") lists them and says why.
+
+- One concern per patch, named for it (`0002-fake-outbox-bound.patch`), with a header comment saying what it changes, why the demo needs it, and which issue added it. Keep it as small as the concern allows, and never touch an invariant in Kestrel's `docs/SPEC.md`.
+- Make a patch by editing `vendor/kestrel` on a scratch basis and running `git diff` there, then re-run the build from clean to prove it applies. A patch that fails to apply stops the build. That's intended: fix the patch in the same PR that bumped `.kestrel-version`.
+- If a fix is one self-hosters would want too, propose it as a kestrel-repo issue instead and drop the patch once a release carries it.
 
 ## The safety property
 
