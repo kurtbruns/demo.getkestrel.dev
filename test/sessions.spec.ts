@@ -4,6 +4,7 @@
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { rateLimitKey } from "../src/index";
 import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
 import { BASE, SAME_ORIGIN, visitor } from "./support";
 
@@ -36,6 +37,7 @@ describe("a first visit", () => {
     }
     const body = (await res.json()) as PostList;
     expect(body.page.total).toBeGreaterThanOrEqual(7);
+    expect(body.posts.map((p) => p.subject)).toContain("Try editing this draft");
     expect(await seedCount(await v.sandbox())).toBe(1);
   });
 
@@ -52,6 +54,8 @@ describe("a session", () => {
   it("reaches the same sandbox every time, and only its own", async () => {
     const a = visitor();
     const b = visitor();
+    await a.fetch("/posts"); // a session starts with a GET, as the editor's does
+    await b.fetch("/posts");
     const created = await a.fetch("/posts", {
       method: "POST",
       headers: SAME_ORIGIN,
@@ -77,6 +81,24 @@ describe("a session", () => {
       expect(body.page.total).toBeGreaterThanOrEqual(7);
     }
     const stub = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(SECRET, token)));
+    expect(await seedCount(stub)).toBe(1);
+  });
+
+  it("is seeded once when its first requests race within one event", async () => {
+    // Separate requests are separate events, which blockConcurrencyWhile orders. These six
+    // run inside one event, where only the shared start promise keeps them from each
+    // starting a seed.
+    const { token } = await mintSession(SECRET);
+    const stub = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(SECRET, token)));
+    const totals = await runInDurableObject(stub, async (instance) => {
+      const responses = await Promise.all(
+        Array.from({ length: 6 }, () => instance.fetch(new Request(`${BASE}/posts`))),
+      );
+      return Promise.all(responses.map(async (r) => ((await r.json()) as PostList).page.total));
+    });
+    for (const total of totals) {
+      expect(total).toBeGreaterThanOrEqual(7);
+    }
     expect(await seedCount(stub)).toBe(1);
   });
 
@@ -150,5 +172,86 @@ describe("paths that need no sandbox", () => {
     }
     const robots = await SELF.fetch(`${BASE}/robots.txt`);
     expect(await robots.text()).toBe("User-agent: *\nDisallow: /\n");
+  });
+});
+
+describe("hardening", () => {
+  it("finds the valid cookie among several of the same name", async () => {
+    const v = visitor();
+    await v.fetch("/posts");
+    const res = await SELF.fetch(`${BASE}/posts`, {
+      headers: { cookie: `${SESSION_COOKIE}=junk; ${v.cookie}; ${SESSION_COOKIE}=more-junk` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    await res.arrayBuffer();
+  });
+
+  it("starts no session for a cookieless write, HEAD or OPTIONS", async () => {
+    for (const method of ["POST", "PUT", "DELETE", "HEAD", "OPTIONS"]) {
+      const res = await SELF.fetch(`${BASE}/posts`, {
+        method,
+        headers: { "cf-connecting-ip": "198.51.100.150" },
+      });
+      expect(res.status, method).toBe(403);
+      expect(res.headers.get("set-cookie"), method).toBeNull();
+      await res.arrayBuffer();
+    }
+  });
+
+  it("starts no session for /favicon.ico", async () => {
+    const res = await SELF.fetch(`${BASE}/favicon.ico`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    await res.arrayBuffer();
+  });
+
+  it("never lets a shared cache keep a sandbox's response", async () => {
+    const v = visitor();
+    const first = await v.fetch("/");
+    expect(first.headers.get("set-cookie")).not.toBeNull();
+    expect(first.headers.get("cache-control")).toBe("private, no-store");
+    expect(first.headers.get("vary")).toMatch(/cookie/i);
+    await first.arrayBuffer();
+    // Kestrel marks its landing page `public, max-age=300`; in a sandbox it's private.
+    const again = await v.fetch("/");
+    expect(again.headers.get("cache-control")).toMatch(/^private\b/);
+    expect(again.headers.get("cache-control")).not.toMatch(/public/);
+    expect(again.headers.get("vary")).toMatch(/cookie/i);
+    await again.arrayBuffer();
+  });
+
+  it("keys the rate limit on an IPv6 client's /64", () => {
+    expect(rateLimitKey("203.0.113.9")).toBe("203.0.113.9");
+    expect(rateLimitKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe("2001:db8:1:2::/64");
+    expect(rateLimitKey("2001:db8:1:2::1")).toBe("2001:db8:1:2::/64");
+    expect(rateLimitKey("2001:0DB8:0001:0002::ffff")).toBe("2001:db8:1:2::/64");
+    expect(rateLimitKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(rateLimitKey(null)).toBe("unknown");
+  });
+
+  it("answers a 503 when the sandbox can't start, and recovers once it can", async () => {
+    const { token, value } = await mintSession(SECRET);
+    const name = await sandboxName(SECRET, token);
+    const stub = env.SANDBOX.get(env.SANDBOX.idFromName(name));
+    // A migrations table the runner can't read makes the start throw.
+    await runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec("CREATE TABLE demo_migrations (unexpected INTEGER)");
+    });
+    const cookie = `${SESSION_COOKIE}=${value}`;
+    const broken = await SELF.fetch(`${BASE}/posts`, { headers: { cookie } });
+    expect(broken.status).toBe(503);
+    expect(((await broken.json()) as { error: string }).error).toBe("sandbox_unavailable");
+    // A start that throws inside blockConcurrencyWhile breaks the object, which the runtime
+    // resets; a fresh stub reaches the new instance (over the same storage).
+    const fix = (_i: unknown, state: DurableObjectState) => {
+      state.storage.sql.exec("DROP TABLE IF EXISTS demo_migrations");
+    };
+    await runInDurableObject(stub, fix).catch(() =>
+      runInDurableObject(env.SANDBOX.get(env.SANDBOX.idFromName(name)), fix),
+    );
+    const fixed = await SELF.fetch(`${BASE}/posts`, { headers: { cookie } });
+    expect(fixed.status).toBe(200);
+    await fixed.arrayBuffer();
   });
 });

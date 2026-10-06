@@ -22,7 +22,7 @@ export default defineConfig(() => {
             // dev-shaped, so its dev auth and /api/dev/* routes are off.
             APP_ORIGIN: "https://demo.getkestrel.dev",
             // What a careless deploy might bind. The wrapper builds Kestrel's env from an
-            // allowlist, so none of these may reach it (test/spike.spec.ts).
+            // allowlist, so none of these may reach it (test/kestrel.spec.ts).
             DEV_AUTH_SECRET: "must-not-reach-kestrel",
             ACCESS_TEAM_DOMAIN: "must-not-reach-kestrel.cloudflareaccess.com",
             ACCESS_AUD: "must-not-reach-kestrel",

@@ -7,7 +7,11 @@
  * or anything Kestrel emits names one.
  */
 
-export const SESSION_COOKIE = "kestrel_demo";
+/**
+ * `__Host-` makes the browser accept the cookie only from this exact host, `Secure`, with
+ * `Path=/` and no `Domain`, so another getkestrel.dev subdomain can't plant one here.
+ */
+export const SESSION_COOKIE = "__Host-kestrel_demo";
 
 /** The cookie's lifetime. Sandboxes expire on their own idle TTL (#8); this only has to
  *  outlive it, so a returning visitor keeps their sandbox until then. */
@@ -33,14 +37,22 @@ function fromBase64url(s: string): Uint8Array | null {
   }
 }
 
+// One imported key per secret for the isolate's life (there is only ever one secret).
+const keys = new Map<string, Promise<CryptoKey>>();
+
 function hmacKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
+  let key = keys.get(secret);
+  if (!key) {
+    key = crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign", "verify"],
+    );
+    keys.set(secret, key);
+  }
+  return key;
 }
 
 /** The two uses of the secret are domain-separated, so a cookie's signature is never also a
@@ -55,13 +67,28 @@ export async function mintSession(secret: string): Promise<{ token: string; valu
   return { token, value: `${token}.${base64url(sig)}` };
 }
 
-/** The request's session token, if it carries a cookie this Worker signed; otherwise null. */
+/**
+ * The request's session token, if it carries a cookie this Worker signed; otherwise null.
+ * Every cookie of that name is tried, so a junk one sent beside the real one (a browser may
+ * send both) can't knock the visitor out of their sandbox.
+ */
 export async function readSession(request: Request, secret: string): Promise<string | null> {
-  const value = cookieValue(request.headers.get("cookie"), SESSION_COOKIE);
-  const match = value ? /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(value) : null;
+  for (const value of cookieValues(request.headers.get("cookie"), SESSION_COOKIE)) {
+    const token = await verify(value, secret);
+    if (token) {
+      return token;
+    }
+  }
+  return null;
+}
+
+async function verify(value: string, secret: string): Promise<string | null> {
+  const match = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(value);
   const token = match?.[1];
-  const sig = match?.[2] ? fromBase64url(match[2]) : null;
-  if (!token || !sig) {
+  const encoded = match?.[2];
+  const sig = encoded ? fromBase64url(encoded) : null;
+  // Only the canonical encoding of a signature counts, so one session has one cookie value.
+  if (!token || !sig || base64url(sig) !== encoded) {
     return null;
   }
   // crypto.subtle.verify compares in constant time.
@@ -86,12 +113,13 @@ export function sessionCookie(value: string): string {
   return `${SESSION_COOKIE}=${value}; Path=/; Max-Age=${COOKIE_MAX_AGE_S}; HttpOnly; Secure; SameSite=Lax`;
 }
 
-function cookieValue(header: string | null, name: string): string | undefined {
+function cookieValues(header: string | null, name: string): string[] {
+  const values: string[] = [];
   for (const part of header?.split(";") ?? []) {
     const eq = part.indexOf("=");
     if (eq > 0 && part.slice(0, eq).trim() === name) {
-      return part.slice(eq + 1).trim();
+      values.push(part.slice(eq + 1).trim());
     }
   }
-  return undefined;
+  return values;
 }

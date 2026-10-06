@@ -13,22 +13,31 @@ import { ensureSeeded, sandboxEnv } from "./sandbox";
 export class SandboxDO extends DurableObject<Env> {
   readonly db = new DurableObjectD1(this.ctx.storage);
   private readonly kenv: KestrelEnv = sandboxEnv(this.env, this.db.asD1());
-  private ready = false;
+  private starting: Promise<void> | undefined;
+
+  /**
+   * Migrate and seed, once per DO start, before anything else runs. The promise is shared,
+   * so concurrent first requests within one event wait on the same start, and
+   * blockConcurrencyWhile holds every other event until it's done, so none sees a
+   * half-seeded database. A start that throws is forgotten, so the next request retries it.
+   * Done on first fetch rather than in the constructor, so a DO opened only to inspect its
+   * storage (the tests' runInDurableObject) isn't seeded behind their back.
+   */
+  private start(): Promise<void> {
+    this.starting ??= this.ctx
+      .blockConcurrencyWhile(async () => {
+        migrate(this.ctx.storage, migrations);
+        await ensureSeeded(this.kenv, BUILD_INFO.tag);
+      })
+      .catch((err: unknown) => {
+        this.starting = undefined;
+        throw err;
+      });
+    return this.starting;
+  }
 
   async fetch(request: Request): Promise<Response> {
-    if (!this.ready) {
-      // The first request migrates and seeds. blockConcurrencyWhile holds every other event
-      // until it's done, so concurrent first requests seed once and none sees a half-seeded
-      // database. Done on first fetch rather than in the constructor, so a DO opened only to
-      // inspect its storage (the tests' runInDurableObject) isn't seeded behind their back.
-      await this.ctx.blockConcurrencyWhile(async () => {
-        if (!this.ready) {
-          migrate(this.ctx.storage, migrations);
-          await ensureSeeded(this.kenv, BUILD_INFO.tag);
-          this.ready = true;
-        }
-      });
-    }
+    await this.start();
     return kestrel.fetch(request, this.kenv, this.executionContext());
   }
 
