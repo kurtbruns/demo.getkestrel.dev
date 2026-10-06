@@ -90,6 +90,17 @@ describe("the reset route", () => {
     expect(res.headers.get("x-robots-tag")).toBe("noindex");
   });
 
+  it("starts no sandbox for a cookieless GET or HEAD", async () => {
+    for (const method of ["GET", "HEAD"]) {
+      const v = visitor();
+      const res = await v.fetch(RESET_PATH, { method, redirect: "manual" });
+      expect(res.status, method).toBe(303);
+      expect(res.headers.get("location"), method).toBe("/dashboard/");
+      expect(res.headers.get("set-cookie"), method).toBeNull();
+      expect(v.cookie, method).toBeUndefined();
+    }
+  });
+
   it("takes what the dashboard's form posts: a same-origin form submit, answered with the editor", async () => {
     const v = visitor();
     await v.fetch("/posts");

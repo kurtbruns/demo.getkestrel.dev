@@ -34,7 +34,7 @@ client specs pass.
 See DESIGN.md, "Static assets and demo chrome" and "The patch set".
 
 diff --git a/client/auth.ts b/client/auth.ts
-index 6e317ec..0df1dc2 100644
+index 6e317ec..4da37b8 100644
 --- a/client/auth.ts
 +++ b/client/auth.ts
 @@ -37,7 +37,14 @@ export function authHeaders(): Record<string, string> {
@@ -53,7 +53,7 @@ index 6e317ec..0df1dc2 100644
      const p = session.principal;
      const who = p.email || (p.kind === "service" ? "Service token" : "Signed in");
      setHtml(
-@@ -52,6 +59,59 @@ export function renderIdentity(): void {
+@@ -52,6 +59,66 @@ export function renderIdentity(): void {
    }
  }
  
@@ -63,7 +63,9 @@ index 6e317ec..0df1dc2 100644
 + * step that posts to the demo Worker's /_demo/reset; "View publication" opens the
 + * public site, which the editor and the docs room otherwise lack. Fixed, so it adds
 + * nothing to the layout. Rendered once, outside the routed view, so navigating never
-+ * clears it. Escape, a click outside, and Cancel close what's open.
++ * clears it. Escape, focus or a click leaving the pill, and Cancel close what's open.
++ * (The click-outside listener is the one on document; it lives as long as the pill,
++ * which is the page's life, so it is registered here rather than in an install…().)
 + */
 +function renderDemoPill(): void {
 +  if (document.getElementById("demoPill")) {
@@ -97,10 +99,15 @@ index 6e317ec..0df1dc2 100644
 +      step.querySelector("summary")?.focus();
 +    }
 +  });
-+  document.addEventListener("keydown", (e) => {
++  pill.addEventListener("keydown", (e) => {
 +    if (e.key === "Escape" && menu?.open) {
 +      close();
 +      menu.querySelector("summary")?.focus();
++    }
++  });
++  pill.addEventListener("focusout", (e) => {
++    if (!pill.contains(e.relatedTarget as Node | null)) {
++      close();
 +    }
 +  });
 +  document.addEventListener("click", (e) => {
@@ -115,10 +122,10 @@ index 6e317ec..0df1dc2 100644
   * recovery is a fresh document load that re-triggers the Access login. In dev this
 diff --git a/client/demo.spec.ts b/client/demo.spec.ts
 new file mode 100644
-index 0000000..2abad67
+index 0000000..291ff4b
 --- /dev/null
 +++ b/client/demo.spec.ts
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,131 @@
 +// Demo sandbox (patched by demo.getkestrel.dev): in the demo's auth mode, the identity
 +// chip names the sandbox, and a split pill in the corner opens a note about it, with the
 +// reset as a second step, and links to the public site.
@@ -199,13 +206,36 @@ index 0000000..2abad67
 +    pill().querySelector<HTMLButtonElement>(".demo-cancel")?.click();
 +    expect(step.open).toBe(false);
 +    expect(menu.open).toBe(true);
++    expect(document.activeElement).toBe(step.querySelector("summary"));
 +
-+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
++    // Escape from inside the pill closes it and hands focus back to the tag.
++    step
++      .querySelector("summary")
++      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 +    expect(menu.open).toBe(false);
++    expect(document.activeElement).toBe(menu.querySelector("summary"));
 +
 +    menu.open = true;
 +    document.body.click();
 +    expect(menu.open).toBe(false);
++  });
++
++  it("leaves Escape elsewhere alone, and closes when focus leaves the pill", () => {
++    const menu = pill().querySelector<HTMLDetailsElement>(".demo-menu");
++    if (!menu) {
++      throw new Error("no menu");
++    }
++    const outside = document.createElement("button");
++    document.body.append(outside);
++    menu.open = true;
++    menu.querySelector<HTMLElement>("summary")?.focus();
++    outside.focus();
++    expect(menu.open).toBe(false);
++    menu.open = true;
++    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
++    expect(menu.open).toBe(true);
++    expect(document.activeElement).toBe(outside);
++    outside.remove();
 +  });
 +
 +  it("renders the pill once, however often identity is rendered", () => {
@@ -228,10 +258,10 @@ index 0000000..2abad67
 +  });
 +});
 diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
-index fda090a..6ad8cb0 100644
+index fda090a..2125d4d 100644
 --- a/public/dashboard/styles.css
 +++ b/public/dashboard/styles.css
-@@ -781,6 +781,188 @@ body.nav-resizing .sidebar {
+@@ -781,6 +781,196 @@ body.nav-resizing .sidebar {
  .identity .who.dev {
    font-style: italic;
  }
@@ -243,11 +273,14 @@ index fda090a..6ad8cb0 100644
 +  font-weight: 600;
 +}
 +.demo-pill {
++  /* How far up it sits; the popover's height is capped by what's left above it. */
++  --demo-bottom: 18px;
 +  position: fixed;
 +  right: 18px;
-+  bottom: 18px;
-+  /* The save bar's rung; appended after it, so it paints on top. */
-+  z-index: var(--z-bar);
++  bottom: var(--demo-bottom);
++  /* Above the content, below the drawer, the menus, the toasts and the modals. It
++     never shares the save bar's space: it steps up over the bar while it shows. */
++  z-index: var(--z-header);
 +  display: inline-flex;
 +  align-items: stretch;
 +  border-radius: 999px;
@@ -266,6 +299,8 @@ index fda090a..6ad8cb0 100644
 +.demo-menu > summary {
 +  display: flex;
 +  align-items: center;
++  /* Fills the pill's height even where <details> ignores display: flex. */
++  height: 100%;
 +  padding: 0 5px 0 10px;
 +  border-radius: 999px 0 0 999px;
 +  list-style: none;
@@ -338,6 +373,8 @@ index fda090a..6ad8cb0 100644
 +  right: 0;
 +  bottom: calc(100% + 10px);
 +  width: min(300px, calc(100vw - 24px));
++  max-height: calc(100dvh - var(--demo-bottom) - 72px);
++  overflow-y: auto;
 +  padding: 16px 16px 12px;
 +  border-radius: 12px;
 +  background: var(--card);
@@ -405,22 +442,23 @@ index fda090a..6ad8cb0 100644
 +}
 +/* Step up over the save bar while it shows, rather than sit on its actions. */
 +body:has(.savebar.show) .demo-pill {
-+  bottom: 80px;
++  --demo-bottom: 80px;
 +}
 +@media (max-width: 539px) {
 +  .demo-pill {
++    --demo-bottom: 12px;
 +    right: 12px;
-+    bottom: 12px;
 +  }
-+  /* The save bar stacks to two rows here. */
++  /* The save bar stacks here, and a wrapped error makes it taller (the room
++     body.has-savebar .content reserves for it). */
 +  body:has(.savebar.show) .demo-pill {
-+    bottom: 120px;
++    --demo-bottom: 152px;
 +  }
 +}
  .identity a.ghost {
    font-size: 13px;
    color: var(--muted);
-@@ -2439,6 +2621,13 @@ th.num .th-sort {
+@@ -2439,6 +2629,13 @@ th.num .th-sort {
  .toast.show {
    opacity: 1;
  }
@@ -435,10 +473,10 @@ index fda090a..6ad8cb0 100644
  /* modal */
  .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index fcd1285..ded6b85 100644
+index fcd1285..9874b02 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
-@@ -241,23 +241,64 @@ export interface ReaderIdentity {
+@@ -241,23 +241,66 @@ export interface ReaderIdentity {
    logoUrl?: string;
  }
  
@@ -447,7 +485,8 @@ index fcd1285..ded6b85 100644
 +   <details>, since these pages run no script), and "Open dashboard". It rides the dev
 +   pill's injection points, so it reaches the card pages, the reader shell and a hosted
 +   post page, but never a frozen render or a sent email (I3). It wears the dev pill's
-+   accent tokens (DEV_BADGE_STYLE, emitted beside it) and adds the note's card colors. */
++   accent tokens (DEV_BADGE_STYLE, emitted whole beside it to keep this patch small; its
++   .r-dev rules go unused) and adds the note's card colors. */
 +const DEMO_PILL_STYLE = `
 +:root { --k-card:#ffffff; --k-ink:#18181b; --k-mut:#52525b; --k-line:#e4e4e7; --k-ring:#2563eb; }
 +@media (prefers-color-scheme: dark) { :root { --k-card:#232327; --k-ink:#ededed; --k-mut:#a1a1aa; --k-line:#3a3a41; --k-ring:#60a5fa; } }
@@ -457,7 +496,7 @@ index fcd1285..ded6b85 100644
 +          background:var(--k-accent); color:var(--k-accent-contrast); border:1px solid var(--k-accent);
 +          box-shadow:0 6px 20px rgba(0,0,0,.22); }
 +.r-demo details { display:flex; margin:0; }
-+.r-demo summary { display:flex; align-items:center; padding:0 5px 0 10px; border-radius:999px 0 0 999px;
++.r-demo summary { display:flex; align-items:center; height:100%; padding:0 5px 0 10px; border-radius:999px 0 0 999px;
 +                  list-style:none; cursor:pointer; }
 +.r-demo summary::-webkit-details-marker { display:none; }
 +.r-demo .r-dev-tag { display:inline-flex; align-items:center; gap:3px; font-size:9.5px; letter-spacing:.09em;
@@ -472,7 +511,8 @@ index fcd1285..ded6b85 100644
 +             color:inherit; text-decoration:none; white-space:nowrap; }
 +.r-demo-go:hover { text-decoration:underline; }
 +.r-demo-pop { position:absolute; right:0; bottom:calc(100% + 10px); box-sizing:border-box;
-+              width:min(300px, calc(100vw - 24px)); padding:16px 16px 12px; border-radius:12px;
++              width:min(300px, calc(100vw - 24px)); max-height:calc(100dvh - 90px); overflow-y:auto;
++              padding:16px 16px 12px; border-radius:12px;
 +              background:var(--k-card); color:var(--k-ink); border:1px solid var(--k-line);
 +              box-shadow:0 6px 20px rgba(0,0,0,.22); font-weight:400; cursor:auto; }
 +.r-demo-h { font-size:15px; font-weight:650; letter-spacing:-.01em; margin:0 0 4px; }
@@ -508,7 +548,7 @@ index fcd1285..ded6b85 100644
 -  return url
 -    ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
 -    : "";
-+  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Your own copy of Kestrel</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url ?? "/dashboard/")}">Open dashboard &rarr;</a></aside>`;
++  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Your own copy of Kestrel</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url ?? "/dashboard/")}">Open dashboard &rarr;</a></aside>`;
  }
  
  /** The dev-only shortcut's browser-only chrome for a hosted post page, which is not

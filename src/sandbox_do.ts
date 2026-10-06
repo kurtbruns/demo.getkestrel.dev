@@ -186,14 +186,11 @@ export class SandboxDO extends DurableObject<Env> {
 
   /** "Reset demo": wipe the sandbox and seed it again, then back to the editor. */
   private async reset(request: Request, url: URL): Promise<Response> {
-    if (request.method === "GET") {
-      // The reset is a step in the dashboard's demo pill now; an old link lands there.
-      return new Response(null, { status: 303, headers: { location: "/dashboard/" } });
-    }
+    // A GET or HEAD never gets here: the Worker sends it to the dashboard.
     if (request.method !== "POST") {
       return Response.json(
         { error: "method_not_allowed" },
-        { status: 405, headers: { allow: "GET, POST" } },
+        { status: 405, headers: { allow: "GET, HEAD, POST" } },
       );
     }
     if (!isOwnWrite(request, url)) {
