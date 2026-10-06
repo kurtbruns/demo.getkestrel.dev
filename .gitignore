@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# Kestrel at the pinned tag (scripts/fetch-kestrel.mjs), never committed
+vendor/
+
+# local secrets (never commit)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# wrangler / miniflare local state and generated types
+.wrangler/
+worker-configuration.d.ts
+
+# build output
+dist/
+
+# logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*

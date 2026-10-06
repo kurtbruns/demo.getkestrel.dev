@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kestrel-demo",
+  "main": "src/index.ts",
+  // Kestrel's own date and flags (its wrangler.jsonc at the pinned tag), since its code runs here.
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Kestrel imports its demo posts and setup docs as text. Its css-inline .wasm import needs
+  // nothing here: wrangler's default CompiledWasm rule covers **/*.wasm.
+  "rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
+  // Kestrel's built admin tree, from scripts/fetch-kestrel.mjs. Identical for every visitor.
+  "assets": { "directory": "./vendor/kestrel/dist/public", "not_found_handling": "none" },
+  // Clone, patch and build Kestrel at .kestrel-version; a no-op when vendor/ is current.
+  "build": { "command": "node scripts/fetch-kestrel.mjs", "watch_dir": ["./src", "./patches"] }
+}

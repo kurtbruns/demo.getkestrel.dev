@@ -71,7 +71,7 @@ This is the main reason for the per-visitor design over a single shared demo ins
 - Kestrel's admin client (`scripts/build-client.mjs`: `public/` + `client/` → `dist/public`), which the demo serves as its static assets;
 - the build stamp (`scripts/stamp-version.mjs` → the gitignored `src/generated/version.ts`), without which Kestrel's `src/build.ts` fails to import.
 
-The demo's wrangler config has to carry what Kestrel's does for its code to bundle: the `Text` rule for `**/*.md` (the demo posts and the setup docs are imported as text), the css-inline WASM module, and `nodejs_compat`.
+The demo's wrangler config has to carry what Kestrel's does for its code to bundle: the `Text` rule for `**/*.md` (the demo posts and the setup docs are imported as text) and `nodejs_compat`. The css-inline `.wasm` import needs no rule, since wrangler's default `CompiledWasm` rule covers it, as it does in Kestrel's own config.
 
 A clone rather than a git dependency (`github:kurtbruns/kestrel#v1.2.0`), because npm installs a git dependency without its devDependencies (Kestrel's client build needs esbuild) and without `.git` (so the build stamp would read `dev` instead of the tag), and because a patch set needs a working tree to apply to. It mirrors how getkestrel.dev's CI clones Kestrel at `.kestrel-docs-version`.
 
