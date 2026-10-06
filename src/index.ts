@@ -140,6 +140,14 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (isAssetPath(url.pathname)) {
     return new Response("Not found", { status: 404 });
   }
+  if (url.pathname === RESET_PATH && (request.method === "GET" || request.method === "HEAD")) {
+    // The reset is a step in the dashboard's demo pill; an old link lands there. Answered
+    // before the session, so following one starts no sandbox (the dashboard will).
+    return new Response(null, {
+      status: 303,
+      headers: { location: "/dashboard/", "cache-control": "no-store" },
+    });
+  }
 
   const secret = (env as Env & Secrets).SESSION_SECRET;
   if (!secret) {

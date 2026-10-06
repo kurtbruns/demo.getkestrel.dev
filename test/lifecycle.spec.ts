@@ -145,7 +145,11 @@ describe("Reset demo", () => {
       headers: { origin: "https://elsewhere.example" },
     });
     expect(foreignOrigin.status).toBe(403);
-    // GET is the confirmation page; anything but GET or POST is refused.
+    // A GET resets nothing: it lands on the dashboard, where the reset step lives.
+    const get = await v.fetch(RESET_PATH, { redirect: "manual" });
+    expect(get.status).toBe(303);
+    expect(get.headers.get("location")).toBe("/dashboard/");
+    // Anything but GET or POST is refused.
     expect((await v.fetch(RESET_PATH, { method: "PUT" })).status).toBe(405);
     expect(await subjects(v)).toContain(EDITED);
   });
