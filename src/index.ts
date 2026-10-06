@@ -9,6 +9,7 @@
 // First, before Kestrel's modules evaluate: no request may leave the demo (src/egress.ts).
 import "./egress-install";
 import { BUILD_INFO } from "kestrel";
+import { RESET_PATH } from "./sandbox_do";
 import { mintSession, readSession, sandboxName, sessionCookie } from "./session";
 
 export { SandboxDO } from "./sandbox_do";
@@ -143,6 +144,26 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   let token = await readSession(request, secret);
   let newCookie: string | undefined;
+  if (url.pathname === RESET_PATH && request.method === "POST") {
+    if (!token) {
+      // No sandbox to reset (an expired cookie, say): back to the editor, which starts one.
+      return new Response(null, { status: 303, headers: { location: "/dashboard/" } });
+    }
+    // A reset costs as much as a new sandbox, so it shares the new-session limit.
+    const { success } = await env.NEW_SESSIONS.limit({
+      key: rateLimitKey(request.headers.get("cf-connecting-ip")),
+    });
+    if (!success) {
+      return new Response(TOO_MANY, {
+        status: 429,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "retry-after": "60",
+          "cache-control": "no-store",
+        },
+      });
+    }
+  }
   if (!token) {
     // Only a GET starts a session. The editor's first requests are GETs; a cookieless
     // write is another site's form posting here (a SameSite=Lax cookie isn't sent on a

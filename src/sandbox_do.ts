@@ -19,6 +19,12 @@ const SWEEP_TICK_MS = 60_000;
 /** How long a sandbox outlives its visitor's last request before it's deleted (#8). */
 export const IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** How long after a failed wipe the alarm tries again. */
+const WIPE_RETRY_MS = 5 * 60 * 1000;
+
+/** `last_seen` is rewritten at most this often, so a busy visitor isn't two writes a request. */
+const TOUCH_EVERY_MS = 60 * 1000;
+
 /** The visitor's "Reset demo" control posts here (#9's banner). */
 export const RESET_PATH = "/_demo/reset";
 
@@ -97,15 +103,17 @@ export class SandboxDO extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     await this.start();
+    // The visitor is here: stamped before the request runs, so an expiry alarm delivered
+    // while it awaits I/O sees a visitor, not an idle sandbox to wipe.
+    this.touch();
     try {
       return await this.handle(request);
     } finally {
-      // The visitor is here, which pushes the idle expiry out; and any request may have
-      // scheduled, moved or canceled a send. A failure here is logged, never thrown over the
-      // request's own result or error.
+      // Any request may have scheduled, moved or canceled a send. A failure here is logged,
+      // never thrown over the request's own result or error.
       await Promise.resolve()
         .then(() => {
-          this.setMeta("last_seen", String(Date.now()));
+          this.touch();
           return this.armAlarm();
         })
         .catch((err: unknown) => {
@@ -123,14 +131,36 @@ export class SandboxDO extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     const lastSeen = Number(this.meta("last_seen") ?? Number.NaN);
-    if (Number.isFinite(lastSeen) && Date.now() >= lastSeen + IDLE_TTL_MS) {
-      await this.ctx.blockConcurrencyWhile(() => this.wipe());
-      return;
-    }
-    if (this.meta("seeded_kestrel") === null) {
-      // Nothing here: wiped, or never used. An alarm never seeds a sandbox.
+    const seededBy = this.meta("seeded_kestrel");
+    if (seededBy === null) {
+      // Nothing here: wiped, or never used.
       await this.ctx.storage.deleteAlarm();
       return;
+    }
+    // Expired, or seeded by another Kestrel release (which a request would wipe and seed
+    // again): wipe it here, and never seed from an alarm. The visitor's next request, if
+    // any, starts it fresh.
+    if (
+      seededBy !== BUILD_INFO.tag ||
+      (Number.isFinite(lastSeen) && Date.now() >= lastSeen + IDLE_TTL_MS)
+    ) {
+      // Caught inside: a blockConcurrencyWhile callback that throws resets the object.
+      await this.ctx.blockConcurrencyWhile(async () => {
+        try {
+          await this.wipe();
+          this.starting = undefined;
+        } catch (err) {
+          // Try again later rather than rely on the runtime's few retries, after which a
+          // sandbox would never expire.
+          // biome-ignore lint/suspicious/noConsole: the sandbox's only log line for this.
+          console.error("demo.wipe_failed", err);
+          await this.ctx.storage.setAlarm(Date.now() + WIPE_RETRY_MS);
+        }
+      });
+      return;
+    }
+    if (!Number.isFinite(lastSeen)) {
+      this.touch(); // a seeded sandbox always has an expiry
     }
     await this.start();
     try {
@@ -152,7 +182,6 @@ export class SandboxDO extends DurableObject<Env> {
     await this.media.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
-    this.starting = undefined;
   }
 
   /** "Reset demo": wipe the sandbox and seed it again, then back to the editor. */
@@ -170,8 +199,18 @@ export class SandboxDO extends DurableObject<Env> {
       );
     }
     await this.ctx.blockConcurrencyWhile(() => this.wipe());
+    this.starting = undefined;
     await this.start();
     return new Response(null, { status: 303, headers: { location: "/dashboard/" } });
+  }
+
+  /** Record the visitor's activity, which pushes the idle expiry out (at most once a minute). */
+  private touch(): void {
+    const now = Date.now();
+    const seen = Number(this.meta("last_seen") ?? Number.NaN);
+    if (!Number.isFinite(seen) || now - seen >= TOUCH_EVERY_MS) {
+      this.setMeta("last_seen", String(now));
+    }
   }
 
   /** A value in the demo's own `demo_meta` table, or null (also before it exists). */

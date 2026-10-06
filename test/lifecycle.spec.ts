@@ -2,12 +2,12 @@
 // gone the idle TTL, a visitor can reset it, and one seeded by another Kestrel release
 // starts over.
 
-import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import { IDLE_TTL_MS, RESET_PATH } from "../src/sandbox_do";
 import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
-import { SAME_ORIGIN, type Visitor, visitor } from "./support";
+import { BASE, SAME_ORIGIN, type Visitor, visitor } from "./support";
 
 const SECRET = (env as unknown as { SESSION_SECRET: string }).SESSION_SECRET;
 const EDITED = "Edited before the lifecycle event";
@@ -177,5 +177,81 @@ describe("a sandbox seeded by another Kestrel release", () => {
     expect(body.posts.map((p) => p.subject)).toContain("Try editing this draft");
     expect(await ownObjects(stub)).toBe(0);
     expect(await seedCount(stub)).toBe(1);
+  });
+});
+
+describe("the alarm", () => {
+  it("wipes a sandbox seeded by another release, and never seeds it", async () => {
+    const v = visitor();
+    await v.fetch("/posts");
+    const stub = await v.sandbox();
+    await runInDurableObject(stub, async (_i, state) => {
+      state.storage.sql.exec(
+        "UPDATE demo_meta SET value = 'v0.0.0-older' WHERE key = 'seeded_kestrel'",
+      );
+      await state.storage.setAlarm(Date.now() + 60_000);
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await tables(stub)).toEqual([]);
+    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("clears itself on a sandbox that was never used", async () => {
+    const stub = env.SANDBOX.get(env.SANDBOX.newUniqueId());
+    await runInDurableObject(stub, (_i, state) => state.storage.setAlarm(Date.now() + 60_000));
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    // Not seeded, not migrated: only the media wrapper's own bookkeeping tables, which it
+    // creates as the object starts.
+    expect((await tables(stub)).sort()).toEqual(["demo_media", "demo_media_tombstones"]);
+    expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("leaves a sandbox alone before its expiry", async () => {
+    const v = visitor();
+    await makeChanges(v);
+    const stub = await v.sandbox();
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await subjects(v)).toContain(EDITED);
+  });
+});
+
+describe("Reset demo, from outside", () => {
+  it("is refused from a sibling site", async () => {
+    const v = visitor();
+    await makeChanges(v);
+    const res = await v.fetch(RESET_PATH, {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-site" },
+    });
+    expect(res.status).toBe(403);
+    expect(await subjects(v)).toContain(EDITED);
+  });
+
+  it("sends a visitor with no sandbox back to the editor, starting nothing", async () => {
+    const res = await SELF.fetch(`${BASE}${RESET_PATH}`, {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin", "cf-connecting-ip": "198.51.100.230" },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/dashboard/");
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("shares the new-session rate limit", async () => {
+    const v = visitor("203.0.113.77");
+    await v.fetch("/posts"); // one new session from this IP
+    const statuses: number[] = [];
+    for (let i = 0; i < 25 && !statuses.includes(429); i++) {
+      const res = await v.fetch(RESET_PATH, {
+        method: "POST",
+        headers: { "sec-fetch-site": "same-origin" },
+        redirect: "manual",
+      });
+      statuses.push(res.status);
+      await res.arrayBuffer();
+    }
+    expect(statuses.slice(0, 9)).toEqual(Array(9).fill(303));
+    expect(statuses).toContain(429);
   });
 });
