@@ -5,8 +5,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 test("the built assets' _headers marks every asset noindex", () => {
-  const headers = readFileSync("vendor/kestrel/dist/public/_headers", "utf8");
+  const headers = readFileSync(
+    fileURLToPath(new URL("../../vendor/kestrel/dist/public/_headers", import.meta.url)),
+    "utf8",
+  );
   assert.match(headers, /^\/\*\n\s+X-Robots-Tag: noindex$/m);
 });

@@ -7,8 +7,8 @@
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
 // tampered cookie is a new session, not a way in (test/sessions.spec.ts).
 
-import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { runInDurableObject, SELF } from "cloudflare:test";
+import { beforeAll, describe, expect, it } from "vitest";
 import { SESSION_COOKIE } from "../src/session";
 import { BASE, exhaustNewSessions, publish, visitor } from "./support";
 
@@ -19,12 +19,16 @@ describe("a post published in one sandbox", () => {
   const b = visitor();
   let slug = "";
 
-  it("is on its own sandbox's public archive", async () => {
+  beforeAll(async () => {
     slug = await publish(a, {
       subject: `Only in A ${MARKER}`,
       slug: MARKER,
       markdown: `# Only in A\n\nThe body says ${MARKER}.`,
     });
+    await b.fetch("/posts"); // B has a sandbox of its own
+  });
+
+  it("is on its own sandbox's public archive", async () => {
     expect(slug).toBe(MARKER);
     const page = await a.fetch(`/archive/${slug}`);
     expect(page.status).toBe(200);
@@ -37,10 +41,26 @@ describe("a post published in one sandbox", () => {
     expect(await page.text()).not.toContain(MARKER);
   });
 
-  it("is in neither the other sandbox's archive index nor its post list", async () => {
-    for (const path of ["/archive", "/archive/", "/", "/posts", "/posts?status=sent"]) {
-      const res = await b.fetch(path);
-      expect(await res.text(), path).not.toContain(MARKER);
+  it("is listed everywhere in its own sandbox, and nowhere in another", async () => {
+    for (const path of [
+      "/archive",
+      "/archive/",
+      "/",
+      "/subscribe",
+      "/posts",
+      "/posts?status=sent",
+    ]) {
+      const own = await a.fetch(path);
+      expect(own.status, `A ${path}`).toBe(200);
+      const ownText = await own.text();
+      const other = await b.fetch(path);
+      expect(other.status, `B ${path}`).toBe(200);
+      expect(await other.text(), `B ${path}`).not.toContain(MARKER);
+      // A positive control, where the page lists posts at all: the absence in B means
+      // something only if A's same page shows it.
+      if (path !== "/subscribe") {
+        expect(ownText, `A ${path}`).toContain(MARKER);
+      }
     }
   });
 
@@ -54,9 +74,11 @@ describe("a post published in one sandbox", () => {
   });
 
   it("can't be reached with a cookie that only resembles A's", async () => {
-    const [name, value] = (a.cookie ?? "").split("=");
-    const [token] = (value ?? "").split(".");
-    for (const cookie of [`${name}=${token}`, `${name}=${token}.${"A".repeat(43)}`]) {
+    const [name, valueA] = (a.cookie ?? "").split("=");
+    const [tokenA] = (valueA ?? "").split(".");
+    const [, sigB] = ((b.cookie ?? "").split("=")[1] ?? "").split(".");
+    // A's token unsigned, and A's token under B's real signature.
+    for (const cookie of [`${name}=${tokenA}`, `${name}=${tokenA}.${sigB}`]) {
       const res = await SELF.fetch(`${BASE}/archive/${slug}`, {
         headers: { cookie, "cf-connecting-ip": "198.51.100.201" },
       });
@@ -64,15 +86,36 @@ describe("a post published in one sandbox", () => {
       expect(await res.text()).not.toContain(MARKER);
     }
   });
+
+  it("has subscriber links that work only in their own sandbox", async () => {
+    // A seeded subscriber's unsubscribe link, as A's emails carry it.
+    const token = await runInDurableObject(await a.sandbox(), (_i, state) =>
+      String(
+        state.storage.sql
+          .exec<{ unsub_token: string }>(
+            "SELECT unsub_token FROM subscribers WHERE status = 'confirmed' LIMIT 1",
+          )
+          .one().unsub_token,
+      ),
+    );
+    const own = await a.fetch(`/unsubscribe?token=${token}`);
+    expect(own.status).toBe(200);
+    await own.arrayBuffer();
+    const other = await b.fetch(`/unsubscribe?token=${token}`);
+    expect(other.status).toBe(400);
+    await other.arrayBuffer();
+  });
 });
 
 describe("noindex", () => {
   it("is on every response class the Worker makes", async () => {
     const v = visitor();
     const sent = await v.json<{ posts: { slug: string }[] }>("/posts?status=sent");
+    const seededSlug = sent.body.posts[0]?.slug;
+    expect(seededSlug).toBeDefined();
     const paths = [
       "/posts", // API JSON, from a sandbox
-      `/archive/${sent.body.posts[0]?.slug}`, // a public HTML page
+      `/archive/${seededSlug}`, // a public HTML page
       "/media/posts/5eed0001-0000-4000-8000-000000000001/kestrel.webp", // media
       "/no-such-page", // Kestrel's 404
       "/dashboard/missing.js", // the Worker's own 404 for an asset path

@@ -81,10 +81,9 @@ function privately(response: Response, newCookie: string | undefined): Response 
     out.headers.set("cache-control", "private, no-store");
     out.headers.append("set-cookie", sessionCookie(newCookie));
   } else {
+    // Kestrel's errors carry no cache header at all; those are private too.
     const cc = out.headers.get("cache-control");
-    if (cc) {
-      out.headers.set("cache-control", cc.replace(/\bpublic\b/i, "private"));
-    }
+    out.headers.set("cache-control", cc ? cc.replace(/\bpublic\b/i, "private") : "private");
   }
   if (!/\bcookie\b/i.test(out.headers.get("vary") ?? "")) {
     out.headers.append("vary", "Cookie");
@@ -99,7 +98,19 @@ export default {
    * (patches/0003-demo-noindex.patch), since they're served before the Worker runs.
    */
   async fetch(request, env): Promise<Response> {
-    const response = await route(request, env);
+    let response: Response;
+    try {
+      response = await route(request, env);
+    } catch (err) {
+      // Anything the Worker itself didn't expect (a binding outage, say) still gets an
+      // answer of its own, so it carries the headers below rather than the platform's page.
+      // biome-ignore lint/suspicious/noConsole: the Worker's only log line for this.
+      console.error("demo.worker_error", err);
+      response = new Response("The demo hit an error. Reload the page to try again.", {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     const out = new Response(response.body, response);
     out.headers.set("x-robots-tag", "noindex");
     return out;

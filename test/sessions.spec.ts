@@ -184,6 +184,7 @@ describe("hardening", () => {
       });
       expect(res.status, method).toBe(403);
       expect(res.headers.get("set-cookie"), method).toBeNull();
+      expect(res.headers.get("x-robots-tag"), method).toBe("noindex");
       await res.arrayBuffer();
     }
   });
@@ -230,6 +231,7 @@ describe("hardening", () => {
     const cookie = `${SESSION_COOKIE}=${value}`;
     const broken = await SELF.fetch(`${BASE}/posts`, { headers: { cookie } });
     expect(broken.status).toBe(503);
+    expect(broken.headers.get("x-robots-tag")).toBe("noindex");
     expect(((await broken.json()) as { error: string }).error).toBe("sandbox_unavailable");
     // A start that throws inside blockConcurrencyWhile breaks the object, which the runtime
     // resets; a fresh stub reaches the new instance (over the same storage).
