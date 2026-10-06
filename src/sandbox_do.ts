@@ -29,6 +29,47 @@ const TOUCH_EVERY_MS = 60 * 1000;
 export const RESET_PATH = "/_demo/reset";
 
 /**
+ * The confirmation step every "Reset demo" link leads to (patches/0004-demo-chrome.patch):
+ * a page of the demo's own, so its form can post here whatever the linking page's policy
+ * (Kestrel's post pages forbid form posts, and its public pages forbid script, so neither
+ * can confirm a reset itself). The button is the reset; "Keep my changes" goes back.
+ */
+function resetConfirmPage(): Response {
+  const page = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Reset the Kestrel demo?</title>
+<style>
+:root { color-scheme: light dark; --bg:#f8f8f8; --card:#fff; --ink:#18181b; --mut:#52525b; --line:#e4e4e7; --accent:#3355cc; --on:#fff; }
+@media (prefers-color-scheme: dark) { :root { --bg:#18181b; --card:#232327; --ink:#e5e7eb; --mut:#a1a1aa; --line:#2e2e33; --accent:#7d9bff; --on:#10131f; } }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+main { max-width:34rem; margin:12vh auto; padding:28px; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+h1 { font-size:1.35rem; margin:0 0 10px; }
+p { color:var(--mut); margin:0 0 22px; }
+.row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+form { margin:0; }
+button { font:inherit; font-weight:600; cursor:pointer; padding:9px 18px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:var(--on); }
+a { color:var(--accent); font-weight:600; text-decoration:none; }
+button:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (max-width: 600px) { main { margin:16px; } }
+</style></head>
+<body><main>
+<h1>Reset the demo?</h1>
+<p>Everything you've changed in this sandbox (posts, subscribers, settings, sends and uploads) is discarded, and the sample publication is restored.</p>
+<div class="row"><form method="post" action="${RESET_PATH}"><button type="submit">Reset demo</button></form><a href="/dashboard/">Keep my changes</a></div>
+</main></body></html>
+`;
+  return new Response(page, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "x-frame-options": "DENY",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+/**
  * Whether a write comes from the demo's own pages: a browser says so in Sec-Fetch-Site
  * (which a page can't forge), or, lacking it, sends an Origin that matches. A client that
  * isn't a browser sends neither and passes, as Kestrel's own admin gate does.
@@ -186,10 +227,13 @@ export class SandboxDO extends DurableObject<Env> {
 
   /** "Reset demo": wipe the sandbox and seed it again, then back to the editor. */
   private async reset(request: Request, url: URL): Promise<Response> {
+    if (request.method === "GET") {
+      return resetConfirmPage();
+    }
     if (request.method !== "POST") {
       return Response.json(
         { error: "method_not_allowed" },
-        { status: 405, headers: { allow: "POST" } },
+        { status: 405, headers: { allow: "GET, POST" } },
       );
     }
     if (!isOwnWrite(request, url)) {
