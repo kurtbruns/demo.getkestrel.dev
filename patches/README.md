@@ -8,10 +8,16 @@ To write or update one:
 node scripts/fetch-kestrel.mjs --apply-only
 ```
 
-That clones the pinned tag and applies the existing patches, then stops. Commit that state inside the clone, so your diff holds only the new change:
+That clones the pinned tag, applies the existing patches, and stops. It also leaves a marker (`vendor/.kestrel-authoring`) that makes every other build refuse to run, so a running `npm run dev` or `npm run check` can't reclone over your edits. Commit that state inside the clone, so your diff holds only the new change:
 
 ```bash
-git -C vendor/kestrel add -A && git -C vendor/kestrel commit -qm "existing patches"
+git -C vendor/kestrel add -A && git -C vendor/kestrel commit -qm "existing patches" --allow-empty
 ```
 
-Edit `vendor/kestrel`, then write the change out with `git -C vendor/kestrel diff > patches/NNNN-name.patch`. Put a header comment above the first `diff --git` line: what it changes, why the demo needs it, and the issue. Then run `node scripts/fetch-kestrel.mjs --force` to prove the whole set applies and builds from clean. To revise an existing patch, move it out of `patches/` first, run `--apply-only` and commit, then `git -C vendor/kestrel apply` the old patch, edit, and diff again.
+Edit `vendor/kestrel`, then stage everything and write the staged diff, which includes any new files:
+
+```bash
+git -C vendor/kestrel add -A && git -C vendor/kestrel diff --cached > /tmp/NNNN-name.patch
+```
+
+Write it outside `patches/` first, then move it in, because `wrangler dev` watches that directory. Put a header comment above the first `diff --git` line: what it changes, why the demo needs it, and the issue. Then run `node scripts/fetch-kestrel.mjs --force`, which clears the marker and proves the whole set applies and builds from clean. To revise an existing patch, move it out of `patches/` first, run `--apply-only` and commit, then `git -C vendor/kestrel apply` the old patch, edit, and write the diff again.

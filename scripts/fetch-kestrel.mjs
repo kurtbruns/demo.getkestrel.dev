@@ -14,34 +14,49 @@
  * devDependencies (the client build needs esbuild) and without .git (the stamp would read
  * "dev" instead of the tag), and the patches need a working tree to apply to.
  *
- * vendor/.kestrel-build.json records what the tree was built from (the tag and a hash of
- * the patches). When it matches, the build is skipped, so wrangler's build.command keeps
- * `wrangler dev` fast. It is removed before any work and written only after everything
- * succeeds, so a failed or interrupted build is never mistaken for a good one.
+ * .kestrel-build.json, beside the tree, records what it was built from: a hash of the tag,
+ * the clone source, the patches, and this script. When it matches, the build is skipped, so
+ * wrangler's build.command keeps `wrangler dev` fast. It is removed before any work and
+ * written only after everything succeeds, so a failed or interrupted build is never
+ * mistaken for a good one.
  *
  * Flags:
- *   --force       rebuild even when the record matches.
+ *   --force       rebuild even when the record matches, and end a patch-authoring session.
  *   --apply-only  clone and patch, then stop: no install, no client build, no record. For
- *                 authoring a patch (edit vendor/kestrel, `git diff` there) and for the
- *                 patch-mechanism test.
+ *                 authoring a patch (patches/README.md) and for the patch-mechanism test. It
+ *                 leaves .kestrel-authoring beside the tree, and until a --force build clears
+ *                 it every other build refuses to run, so `wrangler dev` (whose build.command
+ *                 is this script) can't wipe edits in progress by recloning.
  *
- * Env (for tests and local experiments; CI and deploys use the defaults):
+ * Env (for tests and local experiments; CI and deploys use the defaults). Relative paths
+ * resolve against the repo root, not the working directory:
  *   KESTREL_REPO         clone source, default https://github.com/kurtbruns/kestrel.git
- *   KESTREL_VENDOR_DIR   where the tree goes, default vendor/kestrel
+ *   KESTREL_VENDOR_DIR   where the tree goes, default vendor/kestrel. Its parent holds the
+ *                        record and the authoring marker, so give each tree its own parent.
  *   KESTREL_PATCHES_DIR  where the patches are, default patches/
  */
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT = fileURLToPath(import.meta.url);
+const ROOT = resolve(dirname(SCRIPT), "..");
 const REPO = process.env.KESTREL_REPO || "https://github.com/kurtbruns/kestrel.git";
 const DIR = resolve(ROOT, process.env.KESTREL_VENDOR_DIR || "vendor/kestrel");
 const PATCHES = resolve(ROOT, process.env.KESTREL_PATCHES_DIR || "patches");
 const RECORD = join(dirname(DIR), ".kestrel-build.json");
+const AUTHORING = join(dirname(DIR), ".kestrel-authoring");
 
 const args = new Set(process.argv.slice(2));
 const force = args.has("--force");
@@ -55,7 +70,11 @@ function fail(msg) {
 }
 
 function run(cmd, cmdArgs, cwd = ROOT) {
-  execFileSync(cmd, cmdArgs, { cwd, stdio: "inherit" });
+  try {
+    execFileSync(cmd, cmdArgs, { cwd, stdio: "inherit" });
+  } catch {
+    fail(`\`${cmd} ${cmdArgs.join(" ")}\` failed (see its output above)`);
+  }
 }
 
 function tagFromPin() {
@@ -77,7 +96,7 @@ function patchFiles() {
 }
 
 function fingerprint(tag, patches) {
-  const h = createHash("sha256").update(`${tag}\n`);
+  const h = createHash("sha256").update(`${tag}\n${REPO}\n`).update(readFileSync(SCRIPT));
   for (const p of patches) {
     h.update(`${relative(PATCHES, p)}\n`).update(readFileSync(p));
   }
@@ -85,7 +104,8 @@ function fingerprint(tag, patches) {
 }
 
 function upToDate(print) {
-  if (!existsSync(RECORD) || !existsSync(join(DIR, "dist/public/dashboard/index.html"))) {
+  const built = ["dist/public/dashboard/index.html", "src/generated/version.ts"];
+  if (!existsSync(RECORD) || !built.every((f) => existsSync(join(DIR, f)))) {
     return false;
   }
   try {
@@ -93,6 +113,31 @@ function upToDate(print) {
   } catch {
     return false;
   }
+}
+
+// The tree is deleted wholesale below, so refuse a target that is the repo or contains it.
+// Compared as real paths, since the same directory can be named through a symlink (macOS's
+// /var is /private/var). DIR may not exist yet, so resolve its nearest existing ancestor.
+function realPath(p) {
+  let head = p;
+  let tail = "";
+  while (!existsSync(head) && head !== dirname(head)) {
+    tail = tail ? join(basename(head), tail) : basename(head);
+    head = dirname(head);
+  }
+  return join(realpathSync(head), tail);
+}
+const realDir = realPath(DIR);
+const realRoot = realpathSync(ROOT);
+if (realDir === realRoot || realRoot.startsWith(realDir + sep) || realDir === dirname(realDir)) {
+  fail(`refusing to use ${DIR} as the Kestrel tree: it is or contains this repo`);
+}
+
+if (existsSync(AUTHORING) && !force && !applyOnly) {
+  fail(
+    `a patch is being authored in ${relative(ROOT, DIR)} (started with --apply-only), so this build won't replace it.\n` +
+      "Finish the patch (patches/README.md), then run `node scripts/fetch-kestrel.mjs --force`.",
+  );
 }
 
 const tag = tagFromPin();
@@ -105,6 +150,7 @@ if (!force && !applyOnly && upToDate(print)) {
 }
 
 rmSync(RECORD, { force: true });
+rmSync(AUTHORING, { force: true });
 rmSync(DIR, { recursive: true, force: true });
 mkdirSync(dirname(DIR), { recursive: true });
 
@@ -132,7 +178,7 @@ for (const p of patches) {
     rmSync(DIR, { recursive: true, force: true });
     fail(
       `${name} does not apply to Kestrel ${tag}.\n${detail}\n` +
-        'Regenerate it against this tag (see .claude/CLAUDE.md, "Patches"), or drop it if the release made it unnecessary.',
+        "Regenerate it against this tag (see patches/README.md), or drop it if the release made it unnecessary.",
     );
   }
   run("git", ["apply", p], DIR);
@@ -140,7 +186,10 @@ for (const p of patches) {
 }
 
 if (applyOnly) {
-  say(`stopped after patching (--apply-only): ${relative(ROOT, DIR)}`);
+  writeFileSync(AUTHORING, `${new Date().toISOString()}\n`);
+  say(
+    `stopped after patching (--apply-only): ${relative(ROOT, DIR)}. Other builds will refuse to run until \`--force\`.`,
+  );
   process.exit(0);
 }
 
@@ -152,6 +201,6 @@ run("node", ["scripts/build-client.mjs"], DIR);
 
 writeFileSync(
   RECORD,
-  `${JSON.stringify({ tag, patches: patches.map((p) => relative(PATCHES, p)), fingerprint: print }, null, 2)}\n`,
+  `${JSON.stringify({ tag, repo: REPO, patches: patches.map((p) => relative(PATCHES, p)), fingerprint: print }, null, 2)}\n`,
 );
 say(`built Kestrel ${tag} with ${patches.length} patch(es)`);

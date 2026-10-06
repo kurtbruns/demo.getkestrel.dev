@@ -17,3 +17,5 @@ npm test         # the build script's patch-mechanism tests
 ```
 
 `npm run build -- --force` rebuilds `vendor/` from scratch. `patches/README.md` explains how to write a patch.
+
+`package.json`'s `allowScripts` lists, at exact versions, the dependencies whose install scripts npm 12 may run (esbuild and workerd, through wrangler). After bumping wrangler, run `npm install-scripts ls` and approve the new versions, or npm 12 silently skips their install scripts.

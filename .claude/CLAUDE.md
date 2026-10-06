@@ -12,7 +12,7 @@ This repo is the live demo of Kestrel at demo.getkestrel.dev: a thin Cloudflare 
 What the demo needs Kestrel to do differently is a patch in `patches/`, not a Kestrel change, so Kestrel ships nothing only the demo uses. `DESIGN.md` ("The patch set") lists them and says why.
 
 - One concern per patch, named for it (`0002-fake-outbox-bound.patch`), with a header comment saying what it changes, why the demo needs it, and which issue added it. Keep it as small as the concern allows, and never touch an invariant in Kestrel's `docs/SPEC.md`.
-- Make or revise a patch with the recipe in `patches/README.md` (`--apply-only`, commit inside the clone, edit, `git diff`), then re-run the build from clean (`--force`) to prove the set applies. A patch that fails to apply stops the build. That's intended: fix the patch in the same PR that bumped `.kestrel-version`.
+- Make or revise a patch with the recipe in `patches/README.md` (`--apply-only`, commit inside the clone, edit, `git add -A` and `git diff --cached`), then re-run the build from clean (`--force`) to prove the set applies. A patch that fails to apply stops the build. That's intended: fix the patch in the same PR that bumped `.kestrel-version`.
 - If a fix is one self-hosters would want too, propose it as a kestrel-repo issue instead and drop the patch once a release carries it.
 
 ## The safety property
