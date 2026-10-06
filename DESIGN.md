@@ -106,7 +106,7 @@ The cost of patches is that they touch Kestrel's internals, so a refactor upstre
 
 ### Updating the demo
 
-When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies the patch set; fix or drop any patch that no longer applies, or that the release made unnecessary), run the demo's checks (the D1 adapter suite against the new migrations, the isolation tests, a seed smoke test), and redeploy. Existing sandboxes were migrated at the old version. The DO records the Kestrel version and migration list it applied, and a sandbox from an older version is reset on its next request rather than migrated in place: sandboxes are disposable, and a reset is always correct. The procedure lives in a skill or a documented script, like getkestrel.dev's `refresh-from-kestrel`.
+When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies the patch set; fix or drop any patch that no longer applies, or that the release made unnecessary), run the demo's checks (the D1 adapter suite against the new migrations, the isolation tests, a seed smoke test), and redeploy. Existing sandboxes were migrated at the old version. The DO records the migrations it applied (`demo_migrations`) and the Kestrel version that seeded it (the seed marker in `demo_meta`), and a sandbox from an older version is reset on its next request rather than migrated in place: sandboxes are disposable, and a reset is always correct. The procedure lives in a skill or a documented script, like getkestrel.dev's `refresh-from-kestrel`.
 
 ### The D1-compatible adapter
 
@@ -119,7 +119,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 - Error text matters: `send/schedule.ts` recognizes a double schedule by matching `UNIQUE constraint failed: sends.post_id` in the error message, so the adapter must let SQLite's constraint messages through unchanged.
 - Schema features: every table is `STRICT`, queries use `json_each` to bind lists, some use `RETURNING`, and foreign keys are enforced, as on D1. DO SQLite supports all four, and `test/d1-adapter.spec.ts` proves it on Kestrel's own schema, ending with Kestrel's full Field Notes seed run through the adapter.
 - Held to D1's limits: at most 100 bound parameters, `undefined` refused as a bind value, and `first(column)` refusing an unknown column, so the demo is no more lenient than a real deployment.
-- Migrations: `src/d1/migrate.ts` applies Kestrel's `migrations/*.sql` in name order, each inside `transactionSync` (DO SQLite refuses `BEGIN`/`COMMIT` in `sql.exec`), and records each in its own `demo_migrations` table, so a re-run is a no-op. The SQL comes from the same generated module as the demo images, `vendor/demo-assets.ts`, so a Kestrel release with a new migration needs no change here.
+- Migrations: `src/d1/migrate.ts` applies Kestrel's `migrations/*.sql` in name order, each inside `transactionSync` (DO SQLite refuses `BEGIN`/`COMMIT` in `sql.exec`), and records each in its own `demo_migrations` table, so a re-run is a no-op. DO SQLite's `sql.exec` refuses a script whose tail after the last `;` is only a comment (after running what came before it), where wrangler's runner accepts one, so every script gets a trailing no-op statement. The SQL comes from the same generated module as the demo images, `vendor/demo-assets.ts`, so a Kestrel release with a new migration needs no change here.
 
 ### Seeding
 

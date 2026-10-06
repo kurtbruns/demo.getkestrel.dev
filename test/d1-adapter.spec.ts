@@ -45,13 +45,52 @@ describe("migrations", () => {
       (_db, storage) => {
         expect(migrate(storage, migrations)).toEqual(migrations.map((m) => m.name));
         expect(migrate(storage, migrations)).toEqual([]);
+        // Every table, index and added column Kestrel's migrations declare exists.
+        const objects = new Set(
+          storage.sql
+            .exec<{ name: string }>("SELECT name FROM sqlite_master")
+            .toArray()
+            .map((r) => r.name),
+        );
+        const all = migrations.map((m) => m.sql).join("\n");
+        const declared = [
+          ...all.matchAll(
+            /CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi,
+          ),
+        ].map((m) => m[1]);
+        expect(declared.length).toBeGreaterThan(10);
+        for (const name of declared) {
+          expect(objects, name).toContain(name);
+        }
+        for (const [, table, column] of all.matchAll(
+          /ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)/gi,
+        )) {
+          const columns = storage.sql
+            .exec<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)
+            .toArray()
+            .map((r) => r.name);
+          expect(columns, `${table}.${column}`).toContain(column);
+        }
+      },
+      { schema: false },
+    );
+  });
+
+  it("apply files that end in a comment, or are only comments, as wrangler does", async () => {
+    await inSandbox(
+      (_db, storage) => {
+        const files = [
+          { name: "0001_a.sql", sql: "CREATE TABLE a (x INTEGER); -- a trailing note" },
+          { name: "0002_b.sql", sql: "CREATE TABLE b (x INTEGER);\n/* the end */\n" },
+          { name: "0003_c.sql", sql: "-- nothing to do in this one\n" },
+          { name: "0004_d.sql", sql: "CREATE TABLE d (x INTEGER)" },
+        ];
+        expect(migrate(storage, files)).toEqual(files.map((f) => f.name));
         const tables = storage.sql
           .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
           .toArray()
           .map((r) => r.name);
-        expect(tables).toEqual(
-          expect.arrayContaining(["posts", "sends", "subscribers", "settings"]),
-        );
+        expect(tables).toEqual(expect.arrayContaining(["a", "b", "d"]));
       },
       { schema: false },
     );
@@ -99,6 +138,8 @@ describe("statements", () => {
       const none = db.prepare("SELECT id FROM posts WHERE id = ?").bind("missing");
       expect(await none.first()).toBeNull();
       expect(await none.first("id")).toBeNull();
+      // As D1: no row is null even for a column the query doesn't have.
+      expect(await none.first("nope")).toBeNull();
       await expect(select.first("nope")).rejects.toThrow(/D1_COLUMN_NOTFOUND/);
     });
   });
@@ -155,6 +196,11 @@ describe("statements", () => {
         /at most 100 bound parameters/,
       );
       expect(() => db.prepare("SELECT ?").bind(undefined)).toThrow(/D1_TYPE_ERROR/);
+      // D1 refuses a bigint rather than lose its precision.
+      expect(() => db.prepare("SELECT ?").bind(2n ** 62n)).toThrow(/D1_TYPE_ERROR/);
+      // ...and takes an array of byte values as a blob.
+      const blob = await db.prepare("SELECT ? AS b").bind([1, 2, 3]).first<ArrayBuffer>("b");
+      expect([...new Uint8Array(blob ?? new ArrayBuffer(0))]).toEqual([1, 2, 3]);
       // STRICT: a text id where an INTEGER goes is refused, not stored.
       await expect(
         db
@@ -174,6 +220,10 @@ describe("statements", () => {
       await insertSend(db, "s1", "p").run();
       // Kestrel's isActiveSendConflict (src/send/schedule.ts) matches this pattern.
       await expect(insertSend(db, "s2", "p").run()).rejects.toThrow(
+        /UNIQUE constraint failed:\s*sends\.post_id/i,
+      );
+      // The same through batch, which is how Kestrel schedules (src/send/schedule.ts).
+      await expect(db.batch([insertSend(db, "s2b", "p")])).rejects.toThrow(
         /UNIQUE constraint failed:\s*sends\.post_id/i,
       );
       // A canceled send doesn't count, per the partial index.

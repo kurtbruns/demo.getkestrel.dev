@@ -16,6 +16,16 @@
  * D1's API is asynchronous.
  */
 
+/**
+ * SQL text DO SQLite will run whatever follows its last statement. `sql.exec` refuses a
+ * script whose tail after the last `;` is only a comment ("SQL code did not contain a
+ * statement"), after running the statements before it; D1's exec and wrangler's migration
+ * runner accept one. A trailing no-op statement gives every script a statement to end on.
+ */
+export function runnable(sql: string): string {
+  return `${sql}\n;SELECT 1;`;
+}
+
 /** D1's cap on bound parameters in one statement; local SQLite allows far more. */
 export const D1_MAX_BOUND_PARAMETERS = 100;
 
@@ -40,14 +50,15 @@ function toSqlValue(value: unknown, sql: string, index: number): SqlStorageValue
   if (typeof value === "boolean") {
     return value ? 1 : 0;
   }
-  if (typeof value === "bigint") {
-    return Number(value);
-  }
   if (value instanceof ArrayBuffer) {
     return value;
   }
   if (ArrayBuffer.isView(value)) {
     return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
+  }
+  // D1 takes an array of byte values as a blob, too.
+  if (Array.isArray(value) && value.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
+    return new Uint8Array(value).buffer;
   }
   throw new Error(
     `D1_TYPE_ERROR: Type '${typeof value}' not supported for parameter ${index + 1} of: ${sql.slice(0, 120)}`,
@@ -82,13 +93,17 @@ class Statement {
   async first<T = unknown>(column?: string): Promise<T | null> {
     const { columns, rows } = this.execute();
     const row = rows[0];
+    // As D1: no row is null, whatever the column; only a row without the column throws.
+    if (!row) {
+      return null;
+    }
     if (column === undefined) {
-      return row ? (toObject(columns, row) as T) : null;
+      return toObject(columns, row) as T;
     }
     if (!columns.includes(column)) {
       throw new Error(`D1_COLUMN_NOTFOUND: Column not found (${column})`);
     }
-    return row ? ((row[columns.indexOf(column)] ?? null) as T) : null;
+    return (row[columns.indexOf(column)] ?? null) as T;
   }
 
   async all<T = Row>(): Promise<D1Result<T>> {
@@ -136,7 +151,7 @@ export class DurableObjectD1 {
 
   async exec(sql: string): Promise<D1ExecResult> {
     const start = Date.now();
-    const cursor = this.storage.sql.exec(sql);
+    const cursor = this.storage.sql.exec(runnable(sql));
     cursor.toArray();
     // D1 reports the statements it ran; DO SQLite runs them as one call.
     const count = sql.split(";").filter((s) => s.trim() !== "").length;

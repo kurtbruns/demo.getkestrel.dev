@@ -7,6 +7,8 @@
  * `transactionSync`; Kestrel's migrations carry no transaction statements of their own.
  */
 
+import { runnable } from "./adapter";
+
 export interface Migration {
   /** The file name, e.g. `0001_init.sql`. Names order the migrations, as wrangler's do. */
   name: string;
@@ -27,12 +29,15 @@ export function migrate(storage: DurableObjectStorage, migrations: Migration[]):
       .map((r) => r.name),
   );
   const applied: string[] = [];
-  for (const m of [...migrations].sort((a, b) => a.name.localeCompare(b.name))) {
+  // Code-unit order, as the build script sorts the files (and as wrangler orders by name).
+  for (const m of [...migrations].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  )) {
     if (done.has(m.name)) {
       continue;
     }
     storage.transactionSync(() => {
-      storage.sql.exec(m.sql);
+      storage.sql.exec(runnable(m.sql));
       storage.sql.exec(`INSERT INTO ${TABLE} (name, applied_at) VALUES (?, ?)`, m.name, Date.now());
     });
     applied.push(m.name);
