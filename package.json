@@ -1,0 +1,32 @@
+{
+  "name": "demo.getkestrel.dev",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Per-visitor sandboxed live demo of Kestrel, served at demo.getkestrel.dev.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/fetch-kestrel.mjs",
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit",
+    "check": "npm run typecheck && biome check .",
+    "format": "biome check --write .",
+    "ci": "biome ci .",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.6",
+    "@types/node": "^22.20.5",
+    "typescript": "~5.9.3",
+    "wrangler": "^4.148.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20261006.1": true,
+    "fsevents@2.3.3": true
+  }
+}

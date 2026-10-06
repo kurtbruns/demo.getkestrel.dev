@@ -1,0 +1,36 @@
+# The build check, on every pull request to main and on main itself: clone, patch and build
+# Kestrel at .kestrel-version, then typecheck, lint, test, and bundle the Worker. Nothing
+# here deploys, and it needs no secret: Kestrel is public and cloned unauthenticated.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Clone Kestrel at .kestrel-version, apply patches/, npm ci and build its client.
+      - run: npm run build
+      - run: npm run check
+      - run: npm test
+      # Bundle the Worker as a deploy would, without deploying.
+      - run: npx wrangler deploy --dry-run --outdir dist
