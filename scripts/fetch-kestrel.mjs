@@ -145,9 +145,19 @@ function writeDemoAssets() {
   const imports = [];
   const images = [];
   const postsDir = join(demo, "posts");
-  const bundles = readdirSync(postsDir, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+  // The layout above is Kestrel's since v1.2.0. A release laid out differently gets an
+  // empty index and a warning, never a crashed build: the seed's own tests, and the
+  // update-kestrel skill's delta report (which watches demo/ and scripts/seed.mjs), are
+  // where a changed seed contract gets caught.
+  const missing = [postsDir, join(demo, "publication.md")].filter((p) => !existsSync(p));
+  if (missing.length > 0) {
+    say(
+      `warning: this Kestrel has no ${missing.map((p) => relative(DIR, p)).join(" or ")}; the demo images index ${missing.includes(postsDir) ? "is empty" : "has no logo"}`,
+    );
+  }
+  const bundles = existsSync(postsDir)
+    ? readdirSync(postsDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+    : [];
   for (const bundle of bundles) {
     if (!bundle.isDirectory()) {
       continue;
@@ -164,12 +174,15 @@ function writeDemoAssets() {
       }
     }
   }
-  const front = readFileSync(join(demo, "publication.md"), "utf8").match(/^---\n([\s\S]*?)\n---/);
+  const publication = join(demo, "publication.md");
+  const front = existsSync(publication)
+    ? readFileSync(publication, "utf8").match(/^---\n([\s\S]*?)\n---/)
+    : null;
   const logo = front?.[1].match(/^logo:\s*(.+?)\s*$/m)?.[1];
   let logoExport = "export const demoLogo = undefined;";
   const migrations = [];
   const migrationsDir = join(DIR, "migrations");
-  for (const file of readdirSync(migrationsDir)
+  for (const file of (existsSync(migrationsDir) ? readdirSync(migrationsDir) : [])
     .filter((f) => f.endsWith(".sql"))
     .sort()) {
     const name = `migration${migrations.length}`;

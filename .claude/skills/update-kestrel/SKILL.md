@@ -6,7 +6,9 @@ description: >-
   whenever Kestrel cuts a tag and the demo should follow ("update the demo to kestrel
   v1.3.0", "kestrel released, bump the pin", "advance .kestrel-version"), and any time you
   edit .kestrel-version by hand. The bump is one line; regenerating patches, keeping the
-  `kestrel` module shim honest and catching new D1 usage is the point.
+  `kestrel` module shim honest, catching new D1 usage, and re-checking what sandbox
+  isolation depends on is the point. Also use it when a patch no longer applies after a
+  bump, or to run scripts/kestrel-delta.mjs.
 ---
 
 # update-kestrel
@@ -34,7 +36,13 @@ Read the changelog's *Breaking* and *Upgrading* sections yourself. A behavior ch
 
 Set `.kestrel-version` to the new tag, then `npm run build -- --force`.
 
-- **A patch that fails to apply** stops the build and names it. Regenerate it against the new tag with the recipe in `patches/README.md`, keeping its header and intent. Run `--apply-only` with only the patches before it in `patches/`, commit inside the clone, `git apply` the old patch with `--3way` or by hand, then edit and diff.
+- **A patch that fails to apply** stops the build and names it. Regenerate it against the new tag with the recipe in `patches/README.md`, keeping its header and intent:
+  1. Move it, and every patch after it, out of `patches/`.
+  2. Run `node scripts/fetch-kestrel.mjs --apply-only`, then commit inside the clone: `git -C vendor/kestrel add -A && git -C vendor/kestrel commit -qm base --allow-empty`.
+  3. Fetch the old tag, because the build's clone is shallow and `--3way` needs the old files: `git -C vendor/kestrel fetch --depth 1 origin tag <old tag>`.
+  4. Apply the old patch with `git -C vendor/kestrel apply --3way <old patch>`, resolve any conflicts, and finish by hand if needed.
+  5. Write the new patch: the old header, then `git -C vendor/kestrel add -A && git -C vendor/kestrel diff --cached`. Put it back in `patches/`, then do the same for the patches after it.
+  6. `node scripts/fetch-kestrel.mjs --force` proves the whole set applies and builds from clean.
 - **A patch whose change the release now makes itself:** drop it, and remove its row from `DESIGN.md`'s patch table.
 - **A patch that applies but whose files changed** (the report's last column): reread it against the new code. Applying cleanly isn't the same as still being right.
 
@@ -43,20 +51,35 @@ Set `.kestrel-version` to the new tag, then `npm run build -- --force`.
 `tsc` checks the wrapper only against the hand-written `src/types/kestrel.d.ts`, so a signature change in Kestrel passes `npm run check`. For every file the report lists under "What the wrapper imports or relies on", compare what `kestrel/entry.ts` re-exports with the shim, and update the shim to match. Then:
 - **New D1 API flagged:** extend `src/d1/adapter.ts` and its tests (`test/d1-adapter.spec.ts`).
 - **New migrations:** nothing to do. `test/d1-adapter.spec.ts` checks every table, index and added column they declare.
-- **Wrangler changes:** if Kestrel's compatibility date, flags or module rules changed, mirror them in this repo's `wrangler.jsonc`.
+- **Wrangler changes:** if Kestrel's compatibility date, flags or module rules changed, mirror them in this repo's `wrangler.jsonc`. A newer compatibility date may need this repo's `wrangler` (and so workerd) bumped too.
+- **New or changed env vars** (`src/env.ts`, e.g. a new required var or a new optional one with a default): decide whether the sandbox sets it, then update `sandboxEnv` (`src/sandbox.ts`), the `KestrelEnv` shim, `checkSandboxConfig` if it affects the transport or notifications, and the allowlist test in `test/kestrel.spec.ts`.
+
+### Re-check what isolation depends on
+
+The safety property (DESIGN.md) rests on facts about Kestrel that a release can change. Over the `<old>..<new>` diff:
+- **Module state:** look for new module-scope state (`const x = new Map/Set`, top-level `let`) in `src/`. DESIGN.md's "Module-level state in Kestrel" lists what's there today. Anything new that holds visitor data and is reachable over HTTP would cross sandboxes in a shared isolate.
+- **Routes:** look for new routes in `src/app.ts`. Each must be answered from the visitor's own sandbox (it is, by construction, unless the Worker answers it itself). A new dev-only route must stay behind `devMode`.
+- **Outbound calls:** check that each one still resolves the global `fetch` when it's called (not a reference captured at module load), so the egress block (`src/egress.ts`) still covers it. Also look for new `connect()` or WebSocket use.
+- **D1 API:** re-survey what Kestrel calls (`.prepare/.bind/.first/.all/.run/.raw/.batch/.exec`, `meta.` fields), beyond the report's section.
+- **DESIGN.md:** update the notes that name the release they were checked against ("At v1.2.0" in "Module-level state", "Surveyed at v1.2.0" in the adapter section, and the version in the opening paragraph).
 
 ## 4. Check
 
 ```bash
 npm run check && npm test
-(cd vendor/kestrel && npm run typecheck && npx vitest run --project client)
-(cd vendor/kestrel && node scripts/check-css-tokens.mjs)
+(cd vendor/kestrel && npm run typecheck && node scripts/check-css-tokens.mjs)
+(cd vendor/kestrel && npx vitest run --project client && npx vitest run --project shared)
+(cd vendor/kestrel && npx vitest run --project worker)
 ```
 
-Kestrel's own worker specs on the patched tree are expected to fail where `0001-demo-auth` changes auth on purpose (401s, auth mode). Its fake-transport and send specs should pass. Then run the demo with `npm run dev` and look:
+Kestrel's worker specs on the patched tree have two expected sets of failures (DESIGN.md, "The patch set"):
+- the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode);
+- the dev-badge specs in `test/archive.spec.ts`, which `0004-demo-chrome` changes.
+
+Anything else failing there, notably a send, notification or fake-transport spec, is a real finding. Then run the demo with `npm run dev` and look:
 - the dashboard loads a seeded sandbox;
-- an archive page has its cover and the demo strip;
-- the "Demo sandbox" chip and the editor's banner show.
+- an archive page has its cover and the demo chrome;
+- the editor shows the demo chrome and the "Demo sandbox" chip.
 
 ## 5. Open the draft PR
 
@@ -66,5 +89,6 @@ Kestrel's own worker specs on the patched tree are expected to fail where `0001-
   - each patch as applied cleanly, regenerated, or dropped;
   - shim and adapter changes;
   - what you checked by hand.
-- **On merge:** the deploy workflow ships it, and every existing sandbox, seeded by the old release, is wiped and seeded fresh on its next request.
+- **Issue:** a bump has no issue of its own unless you file one. File "Kestrel vX.Y.Z" in this repo first, so the PR can say `Closes #N` (`.claude/CLAUDE.md`).
+- **On merge:** the deploy workflow ships it to production (when the repo variable `DEPLOY_ENABLED` is `true`), and every existing sandbox, seeded by the old release, is wiped and seeded fresh on its next request.
 - **Then:** offer to bump getkestrel.dev's `.kestrel-docs-version` too (its `refresh-from-kestrel` skill), so the site's docs match the demo.

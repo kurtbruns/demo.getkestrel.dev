@@ -7,27 +7,29 @@
  *   node scripts/kestrel-delta.mjs --to v1.3.0  # the pin → a given tag
  *   node scripts/kestrel-delta.mjs --from v1.1.0 --to v1.2.0   # any two tags (a rehearsal)
  *
- * With nothing newer than the pin, it says so and exits 0. Otherwise it prints a Markdown
- * report:
- *   - Kestrel's CHANGELOG entries between the two tags;
+ * With nothing newer than the pin, it says so and exits 0. A tag that doesn't exist, or a
+ * `--from` after `--to`, is an error (exit 1). Otherwise it prints a Markdown report:
+ *   - Kestrel's CHANGELOG entries after `--from`, up to and including `--to`;
  *   - new or changed migrations (each sandbox applies them; DESIGN.md, "Updating the demo");
  *   - changes to what the wrapper imports or relies on (kestrel/entry.ts and the shim
  *     src/types/kestrel.d.ts must stay in step with these), and to Kestrel's wrangler config
  *     (compatibility date and flags, module rules);
- *   - changes to every file a patch in patches/ touches, and whether each patch still
- *     applies to the new tag (in order, as the build applies them);
- *   - D1 API the adapter may not cover (src/d1/adapter.ts): new uses of raw, exec, dump,
- *     withSession, or meta fields beyond `changes`.
+ *   - for each patch in patches/, whether it applies to the new tag on top of the ones
+ *     before it (as the build applies them; after one fails, the rest aren't checked), and
+ *     which of its files changed;
+ *   - new lines using D1 API the adapter doesn't implement (src/d1/adapter.ts): withSession,
+ *     dump, or a `meta` field other than `changes`.
  *
  * Env: KESTREL_REPO (default https://github.com/kurtbruns/kestrel.git), KESTREL_PATCHES_DIR
  * (default patches/, for a rehearsal with other patches).
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compareTags, isVersionTag } from "./lib/semver.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = process.env.KESTREL_REPO || "https://github.com/kurtbruns/kestrel.git";
@@ -38,67 +40,55 @@ const flag = (name) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 
-/** What the wrapper imports from Kestrel, or builds from it (kestrel/entry.ts, the build). */
+/** What the wrapper imports from Kestrel (kestrel/entry.ts), or builds from it. */
 const WATCHED = [
   "src/index.ts",
   "src/env.ts",
   "src/dev/seed.ts",
   "src/dev/demo.ts",
   "src/lib/errors.ts",
-  "src/generated/version.ts",
+  "src/providers/fake.ts",
+  "src/notify/fake.ts",
+  "src/build.ts",
   "scripts/build-client.mjs",
+  "scripts/seed.mjs",
   "scripts/stamp-version.mjs",
   "wrangler.jsonc",
   "package.json",
   "demo/",
 ];
 
-const semver = (t) =>
-  t
-    .replace(/^v/, "")
-    .split(/[.-]/)
-    .map((p) => (/^\d+$/.test(p) ? Number(p) : p));
-function compareTags(a, b) {
-  const [x, y] = [semver(a), semver(b)];
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    if (x[i] === y[i]) {
-      continue;
-    }
-    if (x[i] === undefined) {
-      return 1; // a release sorts after its pre-releases
-    }
-    if (y[i] === undefined) {
-      return -1;
-    }
-    return typeof x[i] === "number" && typeof y[i] === "number"
-      ? x[i] - y[i]
-      : String(x[i]) < String(y[i])
-        ? -1
-        : 1;
-  }
-  return 0;
+function fail(msg) {
+  console.error(`[kestrel-delta] ${msg}`);
+  process.exit(1);
 }
 
 function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-function releaseTags() {
-  return git(["ls-remote", "--tags", "--refs", REPO])
-    .split("\n")
-    .map((l) => l.split("refs/tags/")[1])
-    .filter((t) => t && /^v\d+\.\d+\.\d+$/.test(t))
-    .sort(compareTags);
-}
+const tags = git(["ls-remote", "--tags", "--refs", REPO])
+  .split("\n")
+  .map((l) => l.split("refs/tags/")[1])
+  .filter((t) => t && isVersionTag(t));
+const releases = tags.filter((t) => !t.includes("-")).sort(compareTags);
 
 const pin = readFileSync(join(ROOT, ".kestrel-version"), "utf8").trim();
 const from = flag("--from") ?? pin;
-const to = flag("--to") ?? releaseTags().at(-1);
-
-if (!to || compareTags(to, from) <= 0) {
-  console.log(
-    `Kestrel ${from} is the latest release${to && to !== from ? ` (newest tag ${to})` : ""}; nothing to update.`,
-  );
+const to = flag("--to") ?? releases.at(-1) ?? from;
+for (const t of [from, to]) {
+  if (!tags.includes(t)) {
+    fail(
+      `${t} is not a Kestrel version tag (tags look like v1.2.0; ${REPO} has ${releases.join(", ")})`,
+    );
+  }
+}
+const order = compareTags(to, from);
+if (order < 0) {
+  fail(`--from ${from} is after --to ${to}`);
+}
+if (order === 0) {
+  console.log(`Kestrel ${from} is the latest release; nothing to update.`);
   process.exit(0);
 }
 
@@ -110,18 +100,19 @@ try {
   const changed = git(["diff", "--name-only", range], dir).split("\n").filter(Boolean);
   const out = [`# Kestrel ${from} → ${to}`, ""];
 
-  // CHANGELOG: the sections for versions after `from`, up to and including `to`.
+  // CHANGELOG: the sections for versions after `from`, up to and including `to`, with their
+  // own headings demoted under this report's.
   const changelog = git(["show", `${to}:CHANGELOG.md`], dir);
   const sections = changelog.split(/^## /m).slice(1);
   const wanted = sections.filter((s) => {
-    const v = /^\[(\d+\.\d+\.\d+)\]/.exec(s)?.[1];
+    const v = /^\[(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\]/.exec(s)?.[1];
     return v && compareTags(`v${v}`, from) > 0 && compareTags(`v${v}`, to) <= 0;
   });
   out.push(
     "## Changelog",
     "",
     wanted.length
-      ? wanted.map((s) => `### ${s.trim()}`).join("\n\n")
+      ? wanted.map((s) => `### ${s.trim().replace(/^### /gm, "#### ")}`).join("\n\n")
       : "_No changelog entries between these tags._",
     "",
   );
@@ -141,7 +132,7 @@ try {
     "## What the wrapper imports or relies on",
     "",
     watched.length
-      ? `${watched.map((f) => `- \`${f}\``).join("\n")}\n\nCheck \`kestrel/entry.ts\` and \`src/types/kestrel.d.ts\` against these.`
+      ? `${watched.map((f) => `- \`${f}\``).join("\n")}\n\nCheck \`kestrel/entry.ts\`, \`src/types/kestrel.d.ts\` and \`src/sandbox.ts\` against these.`
       : "_Unchanged._",
     "",
   );
@@ -164,27 +155,36 @@ try {
     );
   }
 
-  // Patches: which of their files changed, and whether each still applies, in build order.
+  // Patches, in build order, each on top of the ones before it. After one fails, the build
+  // stops, so the rest aren't checked.
   const patchDir = resolve(ROOT, process.env.KESTREL_PATCHES_DIR || "patches");
-  const patches = readdirSync(patchDir)
-    .filter((f) => f.endsWith(".patch"))
-    .sort();
+  const patches = existsSync(patchDir)
+    ? readdirSync(patchDir)
+        .filter((f) => f.endsWith(".patch"))
+        .sort()
+    : [];
   git(["-c", "advice.detachedHead=false", "checkout", "--quiet", to], dir);
   const rows = [];
+  let failed = false;
   for (const p of patches) {
     const text = readFileSync(join(patchDir, p), "utf8");
     const files = [...text.matchAll(/^diff --git a\/(\S+) b\//gm)].map((m) => m[1]);
     const touched = files.filter((f) => changed.includes(f));
     let applies = "yes";
-    try {
-      git(["apply", "--check", join(patchDir, p)], dir);
-      git(["apply", join(patchDir, p)], dir); // the next patch applies on top, as in the build
-    } catch (err) {
-      applies = `**no**: ${
-        String(err.stderr ?? err)
-          .trim()
-          .split("\n")[0]
-      }`;
+    if (failed) {
+      applies = "not checked: an earlier patch failed";
+    } else {
+      try {
+        git(["apply", "--check", join(patchDir, p)], dir);
+        git(["apply", join(patchDir, p)], dir);
+      } catch (err) {
+        failed = true;
+        applies = `**no**: ${
+          String(err.stderr ?? err)
+            .trim()
+            .split("\n")[0]
+        }`;
+      }
     }
     rows.push(
       `| \`${p}\` | ${applies} | ${touched.length ? touched.map((f) => `\`${f}\``).join(", ") : "none"} |`,
@@ -193,45 +193,51 @@ try {
   out.push(
     "## Patches",
     "",
-    "| Patch | Applies to the new tag | Its files that changed |",
-    "| --- | --- | --- |",
-    ...rows,
+    patches.length
+      ? [
+          "| Patch | Applies to the new tag | Its files that changed |",
+          "| --- | --- | --- |",
+          ...rows,
+        ].join("\n")
+      : "_No patches._",
     "",
   );
 
-  // D1 API the adapter may not cover, counted in each tag's src/.
-  const count = (ref, pattern) => {
+  // D1 API the adapter doesn't implement: lines in `to`'s src/ that `from` doesn't have.
+  // (prepare/bind/first/all/run/raw/batch/exec and meta.changes are implemented.)
+  const uses = (ref) => {
     try {
-      return git(["grep", "-c", "-E", pattern, ref, "--", "src/"], dir)
-        .split("\n")
-        .filter(Boolean)
-        .filter((l) => !l.includes("src/send/budget.ts")) // the metering pass-through
-        .reduce((n, l) => n + Number(l.split(":").at(-1)), 0);
+      return new Set(
+        git(
+          [
+            "grep",
+            "-h",
+            "-E",
+            "withSession|\\.dump\\(|meta\\??\\.[a-z_]+|\\{[^}]*\\bmeta\\b",
+            ref,
+            "--",
+            "src/",
+          ],
+          dir,
+        )
+          .split("\n")
+          .map((l) => l.trim())
+          // withSession, dump, a meta field other than changes, or meta destructured.
+          .filter((l) =>
+            /withSession|\.dump\(|meta\??\.(?!changes\b)[a-z_]+|\{[^}]*\bmeta\b[^}]*\}\s*=/.test(l),
+          ),
+      );
     } catch {
-      return 0; // git grep exits 1 on no match
+      return new Set(); // git grep exits 1 on no match
     }
   };
-  const apis = [
-    ["`.raw(`", (ref) => count(ref, "\\.raw\\(")],
-    ["`db.exec(` / `DB.exec(`", (ref) => count(ref, "(db|DB)\\.exec\\(")],
-    ["`.dump(`", (ref) => count(ref, "\\.dump\\(")],
-    ["`withSession`", (ref) => count(ref, "withSession")],
-    // git grep -E has no lookahead: every meta field read, less the `changes` ones.
-    [
-      "`meta.` fields other than `changes`",
-      (ref) => count(ref, "\\.meta\\.[a-z_]+") - count(ref, "\\.meta\\.changes"),
-    ],
-  ];
-  const flagged = apis
-    .map(([name, uses]) => [name, uses(from), uses(to)])
-    .filter(([, a, b]) => b > a);
+  const before = uses(from);
+  const added = [...uses(to)].filter((l) => !before.has(l));
   out.push(
     "## D1 API the adapter may not cover",
     "",
-    flagged.length
-      ? flagged
-          .map(([name, a, b]) => `- ${name}: ${a} → ${b} uses. Check \`src/d1/adapter.ts\`.`)
-          .join("\n")
+    added.length
+      ? `New lines using D1 API beyond what \`src/d1/adapter.ts\` implements:\n\n${added.map((l) => `- \`${l.replaceAll("`", "'")}\``).join("\n")}`
       : "_No new uses of D1 API beyond what the adapter implements._",
     "",
   );
