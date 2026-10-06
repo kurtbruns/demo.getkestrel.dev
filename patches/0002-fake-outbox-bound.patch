@@ -1,0 +1,72 @@
+Fake outbox bound (kurtbruns/demo.getkestrel.dev#6)
+
+What: the fake transport's in-memory outbox and idempotency map (src/providers/fake.ts)
+and the fake notifier's outbox (src/notify/fake.ts) keep only their newest entries: 500
+messages each, and 5000 idempotency keys.
+
+Why: they are module state. In local dev and Kestrel's tests the process is short-lived
+and the specs clear them, but the demo runs the fake transport in production, in
+long-lived isolates shared by many visitors' sandboxes, where they would grow without
+bound. Nothing reads them over HTTP outside dev mode (/api/dev/outbox is dev-only), so
+this is a memory bound, not a privacy fix. Dedup within the key window is best-effort:
+the window is shared by every sandbox in an isolate, and a missed dedup only adds a
+duplicate row to the fake outbox, never a second delivery record (those are per recipient
+in the sandbox's SQLite).
+
+See DESIGN.md, "Module-level state in Kestrel" and "The patch set".
+
+diff --git a/src/notify/fake.ts b/src/notify/fake.ts
+index 19fc84d..8baeacc 100644
+--- a/src/notify/fake.ts
++++ b/src/notify/fake.ts
+@@ -19,6 +19,9 @@ export interface FakeNotification {
+ }
+ 
+ const outbox: FakeNotification[] = [];
++// Demo sandbox (patched by demo.getkestrel.dev): module state a long-lived isolate never
++// clears, so keep only the newest.
++const OUTBOX_LIMIT = 500;
+ let failCount = 0;
+ 
+ export function fakeNotifications(): readonly FakeNotification[] {
+@@ -43,6 +46,9 @@ export class FakeNotifier implements Notifier {
+       failCount -= 1;
+       throw new Error("fake notification failure");
+     }
++    if (outbox.length >= OUTBOX_LIMIT) {
++      outbox.shift();
++    }
+     outbox.push({ to, ...message, key, sentAt: Date.now() });
+   }
+ }
+diff --git a/src/providers/fake.ts b/src/providers/fake.ts
+index da67190..b5f3a5e 100644
+--- a/src/providers/fake.ts
++++ b/src/providers/fake.ts
+@@ -36,6 +36,13 @@ export interface FakeMessage {
+ 
+ const outbox: FakeMessage[] = [];
+ const sentKeys = new Map<string, string>(); // idempotency key -> providerId
++
++// Demo sandbox (patched by demo.getkestrel.dev): both are module state, which a long-lived
++// isolate running many sandboxes never clears, so keep only the newest. The key window
++// stays far above one batch (the fake sends a whole audience as one), so a retried batch
++// is still deduped.
++const OUTBOX_LIMIT = 500;
++const SENT_KEYS_LIMIT = 5000;
+ let failCount = 0;
+ 
+ export function fakeOutbox(): readonly FakeMessage[] {
+@@ -77,6 +84,12 @@ export function deliverToOutbox(
+       ".Email.SentTo": r.email,
+     });
+     sentKeys.set(key, providerId);
++    if (sentKeys.size > SENT_KEYS_LIMIT) {
++      sentKeys.delete(sentKeys.keys().next().value as string);
++    }
++    if (outbox.length >= OUTBOX_LIMIT) {
++      outbox.shift();
++    }
+     outbox.push({
+       to: r.email,
+       subject: final.subject,

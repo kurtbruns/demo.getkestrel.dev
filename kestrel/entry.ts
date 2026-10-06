@@ -13,3 +13,6 @@ export { getConfig } from "../vendor/kestrel/src/env";
 export { BUILD_INFO } from "../vendor/kestrel/src/generated/version";
 export { default } from "../vendor/kestrel/src/index";
 export { HttpError } from "../vendor/kestrel/src/lib/errors";
+// For the tests of patches/0002-fake-outbox-bound.patch.
+export { FakeNotifier, fakeNotifications } from "../vendor/kestrel/src/notify/fake";
+export { deliverToOutbox, fakeOutbox } from "../vendor/kestrel/src/providers/fake";

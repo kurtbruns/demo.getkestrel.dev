@@ -28,7 +28,24 @@ export function sandboxEnv(
     AWS_REGION: "us-east-1",
     // Kestrel's floor: a demo send fires within a visit.
     MIN_LEAD_SECONDS: "60",
+    // Kestrel's cap. Its default (50) is Workers Free's subrequest limit, but the adapter's
+    // statements are local SQLite calls, not subrequests, so a send finishes in one tick.
+    SUBREQUEST_BUDGET: "1000",
   };
+}
+
+/**
+ * Refuse to run Kestrel on anything but the fake transport, whatever `sandboxEnv` builds:
+ * a belt to the allowlist's braces. Kestrel resolves its notification channel from the env
+ * too, and it must not be Cloudflare's own email.
+ */
+export function checkSandboxConfig(env: KestrelEnv): void {
+  const config = getConfig(env);
+  if (config.provider !== "fake" || config.notifyChannel === "cloudflare") {
+    throw new Error(
+      `the demo sandbox runs only on the fake transport (provider ${config.provider}, notifications ${config.notifyChannel})`,
+    );
+  }
 }
 
 const MARKER = "seeded_kestrel";

@@ -93,6 +93,7 @@ describe("Kestrel in a sandbox", () => {
         "MIN_LEAD_SECONDS",
         "PROVIDER",
         "SENDING_DOMAIN",
+        "SUBREQUEST_BUDGET",
       ].sort(),
     );
     const { status, body } = await me.json<{
