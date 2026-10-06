@@ -1,0 +1,64 @@
+# Deploy to demo.getkestrel.dev on every push to main, and on demand. The `check` job runs
+# the same gate as CI, against Kestrel at .kestrel-version plus patches/; the `deploy` job
+# then deploys the `production` env.
+#
+# The deploy job runs only from main and only when the repo variable DEPLOY_ENABLED is
+# "true", so merges before the Cloudflare setup is done (README.md, "Deploy") check without
+# deploying, and "Run workflow" on another branch can't deploy it. CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID are secrets of the `production` GitHub Environment, as on
+# getkestrel.dev; only the deploy job opts into it, so the job running the tests never sees
+# them.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Clone Kestrel at .kestrel-version, apply patches/, npm ci and build its client.
+      - run: npm run build
+      - run: npm run check
+      - run: npm test
+      - run: npm run deploy:check
+      - name: Deploy skipped
+        if: github.ref != 'refs/heads/main' || vars.DEPLOY_ENABLED != 'true'
+        run: echo "::notice::Deploy skipped; it runs from main once the repo variable DEPLOY_ENABLED is true (README.md, \"Deploy\")."
+
+  deploy:
+    name: deploy
+    needs: check
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Builds Kestrel again (wrangler's build.command) on this fresh runner, then deploys.
+      - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

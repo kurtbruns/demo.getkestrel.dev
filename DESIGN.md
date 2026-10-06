@@ -19,7 +19,7 @@ Non-goals:
 
 ## Why a separate repo
 
-getkestrel.dev is a static Hugo site that owns no data. Adding a stateful Worker with Durable Objects, R2 and per-visitor storage to it would muddle its deploy, its CI and its purpose. Kestrel itself should stay small and legible for self-hosters, who have no use for sandbox infrastructure. So the demo lives here, as a thin wrapper around a pinned Kestrel release. What the wrapper needs Kestrel to do differently is a small patch set in this repo, applied to the pinned release at build time, so Kestrel ships nothing that only the demo uses. The website-side work (the DNS route, the "Try the live demo" CTA, the hero frame linking here) stays in kurtbruns/getkestrel.dev#16.
+getkestrel.dev is a static Hugo site that owns no data. Adding a stateful Worker with Durable Objects, R2 and per-visitor storage to it would muddle its deploy, its CI and its purpose. Kestrel itself should stay small and legible for self-hosters, who have no use for sandbox infrastructure. So the demo lives here, as a thin wrapper around a pinned Kestrel release. What the wrapper needs Kestrel to do differently is a small patch set in this repo, applied to the pinned release at build time, so Kestrel ships nothing that only the demo uses. The demo's own deploy creates the `demo.getkestrel.dev` DNS record (a Workers Custom Domain, README.md "Deploy"). The website-side work (the "Try the live demo" CTA, the hero frame linking here) stays in kurtbruns/getkestrel.dev#16.
 
 ## Architecture
 
