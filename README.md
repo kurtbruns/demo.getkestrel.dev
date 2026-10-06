@@ -10,14 +10,14 @@ Needs Node 22 or later and git.
 
 ```bash
 npm ci
+cp .dev.vars.example .dev.vars   # the local SESSION_SECRET
 npm run build          # clone Kestrel at .kestrel-version into vendor/, apply patches/, build it
-npm run migrate:local  # apply Kestrel's migrations to the local D1 (once, and after a Kestrel bump)
 npm run dev            # wrangler dev on http://localhost:8788; the editor is at /dashboard/
 npm run check          # wrangler types, tsc, Biome
 npm test               # the Worker suite (Vitest in workerd), then the build script's tests
 ```
 
-The first request seeds the "Field Notes" demo publication with Kestrel's own seed.
+Each visitor (each session cookie) gets a sandbox of their own, which migrates and seeds the "Field Notes" demo publication on its first request. To see two independent sandboxes, use two browser profiles, or a private window.
 
 `npm run build -- --force` rebuilds `vendor/` from scratch. `patches/README.md` explains how to write a patch.
 

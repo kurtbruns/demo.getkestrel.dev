@@ -13,7 +13,7 @@
     // nothing here: wrangler's default CompiledWasm rule covers **/*.wasm.
     { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
     // Kestrel's migrations, applied inside each sandbox (src/d1/migrate.ts).
-    { "type": "Text", "globs": ["**/*.sql"] },
+    { "type": "Text", "globs": ["**/*.sql"], "fallthrough": true },
     // The seed's demo images, as ArrayBuffers (vendor/demo-assets.ts).
     {
       "type": "Data",
@@ -30,20 +30,16 @@
     "command": "node scripts/fetch-kestrel.mjs",
     "watch_dir": ["./src", "./kestrel", "./patches"]
   },
-  // Local development only, until #4 moves each visitor into a Durable Object. Kestrel's
-  // schema comes from its own migrations (npm run migrate:local).
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "kestrel-demo-dev",
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "vendor/kestrel/migrations"
-    }
-  ],
+  // Media for every sandbox; #5 scopes each sandbox to its own prefix.
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "kestrel-demo-media-dev" }],
   // One SQLite-backed Durable Object per visitor (DESIGN.md, "Architecture").
   "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "SandboxDO" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxDO"] }],
+  // New sandboxes per IP per minute (src/index.ts). Each costs a migrate, a seed of several
+  // hundred statements, and its storage; a returning visitor's cookie skips this.
+  "ratelimits": [
+    { "name": "NEW_SESSIONS", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }
+  ],
   "vars": {
     // The origin Kestrel's links use. Production sets https://demo.getkestrel.dev (#10).
     "APP_ORIGIN": "http://localhost:8788"

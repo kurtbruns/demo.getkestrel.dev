@@ -1,19 +1,19 @@
 /**
- * What the demo hands Kestrel: the sandbox env, and the first-use seed. #4 moves both into
- * the per-visitor Durable Object; until then they run against the Worker's own D1 and R2.
+ * What the demo hands Kestrel inside a visitor's sandbox: the env it runs on, and the
+ * first-use seed (DESIGN.md, "Request flow").
  */
 
 import { demoImages, demoLogo, getConfig, type KestrelEnv, seedDatabase } from "kestrel";
 
 /**
- * The env Kestrel runs on. Built from an allowlist, never by spreading the Worker's env, so
+ * The env Kestrel runs on, over the sandbox's own database. Built from an allowlist, never by spreading the Worker's env, so
  * nothing the deploy happens to bind (a `DEV_AUTH_SECRET`, Access settings, a `NOTIFY`
  * binding, a provider or its credentials) can reach Kestrel. The transport is always the
  * fake.
  */
-export function sandboxEnv(env: Pick<Env, "DB" | "MEDIA" | "APP_ORIGIN">): KestrelEnv {
+export function sandboxEnv(env: Pick<Env, "MEDIA" | "APP_ORIGIN">, db: D1Database): KestrelEnv {
   return {
-    DB: env.DB,
+    DB: db,
     MEDIA: env.MEDIA,
     PROVIDER: "fake",
     APP_ORIGIN: env.APP_ORIGIN,
@@ -47,8 +47,17 @@ export async function ensureSeeded(env: KestrelEnv, version: string): Promise<bo
     return false;
   }
   await seedDatabase(env, getConfig(env), demoImages, demoLogo);
-  await env.DB.prepare("INSERT OR REPLACE INTO demo_meta (key, value) VALUES (?, ?)")
-    .bind(MARKER, version)
-    .run();
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR REPLACE INTO demo_meta (key, value) VALUES (?, ?)").bind(
+      MARKER,
+      version,
+    ),
+    // How many times this database has been seeded, for the tests and for operating the
+    // demo: a sandbox should be seeded once per Kestrel version, or again after a reset.
+    env.DB.prepare(
+      `INSERT INTO demo_meta (key, value) VALUES ('seed_count', '1')
+       ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
+    ),
+  ]);
   return true;
 }

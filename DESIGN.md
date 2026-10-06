@@ -41,14 +41,18 @@ The wrapper doesn't fork Kestrel's repo. It builds a pinned Kestrel release plus
 
 ### Request flow
 
-1. A request arrives at the demo Worker. Requests for Kestrel's static assets (`/dashboard/` and its CSS/JS, the favicon) are served from the Workers assets directory. They are the same bytes for every visitor and carry no data.
-2. For anything else, the Worker reads the session cookie. With no valid cookie it creates a new session (subject to the per-IP rate limit), sets the cookie, and continues. Crawlers are kept away by `robots.txt` and `noindex` so they don't mint sandboxes.
+1. A request arrives at the demo Worker. Requests for Kestrel's static assets (`/dashboard/` and its CSS/JS, the favicon) are served from the Workers assets directory before the Worker runs. They are the same bytes for every visitor and carry no data. An asset path that reaches the Worker anyway (a file that doesn't exist) gets a plain 404 and never a session, as do `/health` and `robots.txt`.
+2. For anything else, the Worker reads the session cookie. With no valid cookie it creates a new session, subject to the per-IP rate limit (see "Lifecycle"), and sets the cookie on the response. Crawlers are kept away by `robots.txt` (`Disallow: /`) and `noindex`, so they don't mint sandboxes.
 3. The Worker derives the Durable Object id from the session and forwards the request to that DO.
-4. On its first request the DO applies Kestrel's `migrations/` to its SQLite and runs the Field Notes seed. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response, adding `X-Robots-Tag: noindex`.
+4. On its first request after it starts, the DO applies any of Kestrel's `migrations/` it hasn't yet and seeds Field Notes if its database isn't seeded for this Kestrel version, all inside `blockConcurrencyWhile`, so concurrent first requests seed once and none sees a half-seeded database. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response, adding `X-Robots-Tag: noindex` (#7).
 
 ### Session identity
 
-The cookie carries a random 256-bit session token (`HttpOnly; Secure; SameSite=Lax`). The DO id is `idFromName(HMAC(SESSION_SECRET, token))`, so the only way to reach a sandbox is to hold its token, and a token can't be derived from a DO id, a URL, or anything Kestrel emits. Nothing in a URL ever selects a sandbox.
+The cookie (`__Host-kestrel_demo`) carries a random 256-bit session token and an HMAC of it, signed with the Worker secret `SESSION_SECRET` (`HttpOnly; Secure; SameSite=Lax; Path=/`, 30 days). The `__Host-` prefix means a browser takes it only from this exact host, so another getkestrel.dev subdomain can't plant one. The Worker honors only tokens it signed, in their canonical encoding, and tries every cookie of that name, so a junk one sent beside the real one can't knock a visitor out of their sandbox. A forged or tampered cookie counts as no cookie. The DO is named by a second, domain-separated HMAC of the token (`"kestrel-demo sandbox v1:" + token`, where the cookie's signature uses `"kestrel-demo session v1:"`). So the only way to reach a sandbox is to hold its cookie, and a token can't be derived from a DO id, a URL, or anything Kestrel emits. Nothing in a URL ever selects a sandbox (`src/session.ts`).
+
+Only a GET starts a session. The editor's first requests are GETs, while a cookieless write is another site's form posting here (a `SameSite=Lax` cookie isn't sent on a cross-site POST), and starting a session for it would replace the visitor's own. A cookieless POST, PUT, DELETE, HEAD or OPTIONS gets a 403 with no cookie and no sandbox. Two tabs opened at the same instant, before either has a cookie, get two sandboxes; the last cookie wins, and the other tab finds its sandbox gone on its next request. That's acceptable for a demo.
+
+Every sandbox response is private. Kestrel marks its public pages and media `public`, but in the demo every page is one visitor's own and the same URL names different content in different sandboxes. So the Worker rewrites `public` to `private`, adds `Vary: Cookie`, and sends `private, no-store` on a response that starts a session, since it carries the cookie. If a sandbox can't start (its migrate or seed throws), the Worker logs `demo.sandbox_failed` and answers a 503 asking the visitor to reload. It still hands over a new session's cookie, so the reload retries the same sandbox rather than starting another.
 
 ## The safety property
 
@@ -167,7 +171,7 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 
 - **Idle TTL.** Every request records `lastSeen`. The DO's alarm also checks the TTL (about 24h); past it, the DO deletes its R2 prefix and calls `ctx.storage.deleteAll()`. The next request with that cookie gets a fresh sandbox.
 - **Reset.** A "Reset demo" control posts to a wrapper route (outside Kestrel's `/api`) that wipes the DO's storage and the session's R2 prefix, then re-migrates and re-seeds.
-- **Rate limit.** Creating a session costs a migrate, a seed of several hundred statements, and some storage, so new sessions are rate-limited per IP with the Workers Rate Limiting binding. Requests that don't need a sandbox (static assets, `robots.txt`) never create one.
+- **Rate limit.** Creating a session costs a migrate, a seed of several hundred statements, and some storage, so new sessions are rate-limited per network with the Workers Rate Limiting binding `NEW_SESSIONS`: 10 a minute per IPv4 address (`cf-connecting-ip`), or per IPv6 /64, since one IPv6 client usually holds a whole /64 and could rotate through it. Past the limit, the visitor gets a short 429 page asking them to wait a minute, with no cookie and no sandbox. A returning visitor's cookie skips the limit. Requests that don't need a sandbox (static assets, `/favicon.ico`, `robots.txt`, `/health`) never create one.
 
 ## Configuration of the sandbox env
 

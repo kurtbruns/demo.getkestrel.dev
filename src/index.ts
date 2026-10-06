@@ -1,38 +1,97 @@
 /**
- * The demo Worker: Kestrel at the pinned, patched release (see DESIGN.md), run on the
- * sandbox env from sandbox.ts. Kestrel's admin tree is served from static assets before
- * this runs (wrangler.jsonc). For now every visitor shares the Worker's own D1 and R2;
- * #4 gives each visitor a Durable Object of their own.
+ * The demo Worker (DESIGN.md, "Request flow"). Kestrel's admin tree is served from static
+ * assets before this runs (wrangler.jsonc), the same bytes for every visitor. Everything
+ * else is answered by the visitor's own sandbox, a Durable Object their session cookie
+ * selects (src/session.ts), so a visitor can only ever see their own sandbox. A first
+ * visit (a GET with no valid cookie) gets a new session, rate-limited per network.
  */
 
-import kestrel, { BUILD_INFO } from "kestrel";
-import { ensureSeeded, sandboxEnv } from "./sandbox";
+import { BUILD_INFO } from "kestrel";
+import { mintSession, readSession, sandboxName, sessionCookie } from "./session";
 
 export { SandboxDO } from "./sandbox_do";
 
-/**
- * The seed check, at most one in flight per database. Keyed by the database, not held in
- * one module-level promise: Durable Objects of one class share an isolate, so a single
- * latch would let one visitor's finished seed stand in for every other visitor's (#4).
- */
-const seeding = new WeakMap<D1Database, Promise<boolean>>();
-
-function seedOnce(db: D1Database, run: () => Promise<boolean>): Promise<boolean> {
-  let pending = seeding.get(db);
-  if (!pending) {
-    pending = run().finally(() => seeding.delete(db));
-    seeding.set(db, pending);
-  }
-  return pending;
+/** Bindings that aren't in wrangler.jsonc: secrets, set with `wrangler secret put` (or
+ *  `.dev.vars` locally), so `wrangler types` doesn't always see them. */
+interface Secrets {
+  SESSION_SECRET?: string;
 }
 
-/** Hosts this shared-database spike may answer: local dev, and the test suite. */
-function spikeAllowed(url: URL, env: Env & { SPIKE_SHARED_DB?: string }): boolean {
-  return ["localhost", "127.0.0.1"].includes(url.hostname) || env.SPIKE_SHARED_DB === "1";
+const ROBOTS = "User-agent: *\nDisallow: /\n";
+
+/**
+ * Paths that belong to Kestrel's static admin tree. Workers assets serve the files that
+ * exist before this Worker runs; a request that reaches the Worker anyway is for a file
+ * that doesn't exist, and answering it must not start a sandbox.
+ */
+function isAssetPath(pathname: string): boolean {
+  return (
+    pathname === "/dashboard" ||
+    pathname.startsWith("/dashboard/") ||
+    pathname === "/favicon.svg" ||
+    // Browsers ask for this on their own; Kestrel has none, and it mustn't start a sandbox.
+    pathname === "/favicon.ico"
+  );
+}
+
+/** The page a visitor sees when their IP has started too many sandboxes in the last minute. */
+const TOO_MANY = `<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Kestrel demo: slow down a moment</title>
+<body style="font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 15vh auto; padding: 0 1rem">
+<h1 style="font-size: 1.4rem">Too many new demos at once</h1>
+<p>Each visit to the Kestrel demo gets its own private sandbox, and this network has started several in the last minute. Wait a minute and reload the page.</p>
+<p>If you already have a demo open, keep using that tab: its sandbox is still there.</p>
+</body></html>
+`;
+
+/**
+ * The rate limit's key: the client's IPv4 address, or its IPv6 /64. One IPv6 client usually
+ * holds a whole /64 and can rotate addresses within it, so keying on the full address would
+ * be no limit at all. Cloudflare always sets `cf-connecting-ip` in production.
+ */
+export function rateLimitKey(ip: string | null): string {
+  if (!ip) {
+    return "unknown";
+  }
+  if (!ip.includes(":")) {
+    return ip;
+  }
+  // Expand "::" so the first four groups are the /64, whatever the address's shorthand.
+  const [left = "", right] = ip.toLowerCase().split("::");
+  const head = left ? left.split(":") : [];
+  const tail = right === undefined ? [] : right ? right.split(":") : [];
+  const groups = [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill("0"), ...tail];
+  return `${groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ""))
+    .join(":")}::/64`;
+}
+
+/**
+ * A sandbox's response, made safe to send: no shared cache may keep it (Kestrel marks its
+ * public pages and media `public`, but here every page is one visitor's own), and a response
+ * that starts a session is never stored at all, since it carries the cookie.
+ */
+function privately(response: Response, newCookie: string | undefined): Response {
+  const out = new Response(response.body, response);
+  if (newCookie) {
+    out.headers.set("cache-control", "private, no-store");
+    out.headers.append("set-cookie", sessionCookie(newCookie));
+  } else {
+    const cc = out.headers.get("cache-control");
+    if (cc) {
+      out.headers.set("cache-control", cc.replace(/\bpublic\b/i, "private"));
+    }
+  }
+  if (!/\bcookie\b/i.test(out.headers.get("vary") ?? "")) {
+    out.headers.append("vary", "Cookie");
+  }
+  return out;
 }
 
 export default {
-  async fetch(request, env, ctx): Promise<Response> {
+  async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
       return Response.json({
@@ -41,25 +100,70 @@ export default {
         kestrel: { version: BUILD_INFO.version, tag: BUILD_INFO.tag, sha: BUILD_INFO.sha },
       });
     }
-    // Until #4, every visitor would share one database and one open admin, which breaks
-    // the safety property (DESIGN.md), so this never serves a public host.
-    if (!spikeAllowed(url, env)) {
-      return new Response("The demo isn't open yet.", { status: 503 });
+    if (url.pathname === "/robots.txt") {
+      return new Response(ROBOTS, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
-    const senv = sandboxEnv(env);
+
+    if (isAssetPath(url.pathname)) {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const secret = (env as Env & Secrets).SESSION_SECRET;
+    if (!secret) {
+      // biome-ignore lint/suspicious/noConsole: the Worker's only log line for this misconfiguration.
+      console.error("demo.config_invalid", "SESSION_SECRET is not set");
+      return new Response("The demo is misconfigured: SESSION_SECRET is not set.", { status: 500 });
+    }
+
+    let token = await readSession(request, secret);
+    let newCookie: string | undefined;
+    if (!token) {
+      // Only a GET starts a session. The editor's first requests are GETs; a cookieless
+      // write is another site's form posting here (a SameSite=Lax cookie isn't sent on a
+      // cross-site POST), and starting a session for it would replace the visitor's own.
+      // A HEAD or OPTIONS, from a monitor or a preflight, has no use for a sandbox either.
+      if (request.method !== "GET") {
+        return Response.json(
+          { error: "no_session", message: "open the demo in a browser first" },
+          { status: 403 },
+        );
+      }
+      const { success } = await env.NEW_SESSIONS.limit({
+        key: rateLimitKey(request.headers.get("cf-connecting-ip")),
+      });
+      if (!success) {
+        return new Response(TOO_MANY, {
+          status: 429,
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "retry-after": "60",
+            "cache-control": "no-store",
+          },
+        });
+      }
+      const session = await mintSession(secret);
+      token = session.token;
+      newCookie = session.value;
+    }
+
+    const sandbox = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(secret, token)));
+    let response: Response;
     try {
-      await seedOnce(senv.DB, () => ensureSeeded(senv, BUILD_INFO.tag));
+      response = await sandbox.fetch(request);
     } catch (err) {
-      // biome-ignore lint/suspicious/noConsole: the Worker's only log line for a failed seed.
-      console.error("demo.seed_failed", err);
-      return Response.json(
+      // The sandbox couldn't start (a migrate or seed that threw) or broke. Say so, log it,
+      // and still hand over a new session's cookie, so a reload retries the same sandbox
+      // rather than starting another.
+      // biome-ignore lint/suspicious/noConsole: the Worker's only log line for a broken sandbox.
+      console.error("demo.sandbox_failed", err);
+      response = Response.json(
         {
-          error: "seed_failed",
-          message: `Couldn't load the demo publication: ${err instanceof Error ? err.message : String(err)}. Locally, has \`npm run migrate:local\` run?`,
+          error: "sandbox_unavailable",
+          message: "Your demo sandbox couldn't start. Reload the page to try again.",
         },
-        { status: 503 },
+        { status: 503, headers: { "retry-after": "5" } },
       );
     }
-    return kestrel.fetch(request, senv, ctx);
+    return privately(response, newCookie);
   },
 } satisfies ExportedHandler<Env>;
