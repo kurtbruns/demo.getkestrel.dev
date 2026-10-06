@@ -1,8 +1,9 @@
-// The demo chrome (patches/0004-demo-chrome.patch): every public page says it's a private,
-// temporary sandbox and links to the editor and the reset; the reset's confirmation page
-// can post where the linking page couldn't; the email itself never carries any of it; and
-// Kestrel's JSON API is untouched. The editor side (the banner, the "Demo sandbox" chip)
-// is covered by the patch's own client spec, run on the patched tree.
+// The demo chrome (patches/0004-demo-chrome.patch): every public page carries the demo
+// pill, which says it's a private, temporary sandbox and links to the editor, with no form
+// (the reset lives in the editor only); a GET of the reset lands on the editor; the email
+// itself never carries any of it; and Kestrel's JSON API is untouched. The editor side
+// (its pill with the reset step, the "Demo sandbox" chip) is covered by the patch's own
+// client spec, run on the patched tree.
 
 import { runInDurableObject } from "cloudflare:test";
 import { fakeOutbox } from "kestrel";
@@ -10,16 +11,10 @@ import { describe, expect, it } from "vitest";
 import { RESET_PATH } from "../src/sandbox_do";
 import { publish, visitor } from "./support";
 
-const BANNER = 'class="d-demo"';
-
-/** The form-action sources a page's CSP allows, or null when it sets none. */
-function formAction(res: Response): string | null {
-  const csp = res.headers.get("content-security-policy") ?? "";
-  return /form-action ([^;]+)/.exec(csp)?.[1]?.trim() ?? null;
-}
+const PILL = 'class="r-demo"';
 
 describe("the public pages", () => {
-  it("carry the sandbox banner, with the editor and the reset", async () => {
+  it("carry the demo pill, opening the dashboard, and no form to the reset", async () => {
     const v = visitor();
     const { body } = await v.json<{ posts: { slug: string }[] }>("/posts?status=sent");
     const slug = body.posts[0]?.slug;
@@ -34,13 +29,19 @@ describe("the public pages", () => {
     for (const path of pages) {
       const res = await v.fetch(path);
       const html = await res.text();
-      expect(html, path).toContain(BANNER);
-      expect(html, path).toContain('href="/dashboard/"');
-      expect(html, path).toContain(`href="${RESET_PATH}"`);
-      // Any page that does carry a form to the reset must be allowed to submit it.
-      if (html.includes(`action="${RESET_PATH}"`)) {
-        expect(formAction(res), path).toMatch(/'self'/);
-      }
+      expect(html, path).toContain(PILL);
+      // Exactly one pill, and no strip left over from the banner it replaced.
+      expect(html.split(PILL).length - 1, path).toBe(1);
+      expect(html, path).not.toContain("d-demo");
+      expect(html, path).toMatch(
+        /<a class="r-demo-go" href="\/dashboard\/">Open dashboard &rarr;<\/a>/,
+      );
+      expect(html, path).toContain("Your own copy of Kestrel");
+      // The reset lives in the dashboard: no public page links to it or carries its form.
+      expect(html, path).not.toContain(RESET_PATH);
+      // It opens with no script, which these pages forbid.
+      expect(html, path).toMatch(/<aside class="r-demo"[^>]*><details><summary>/);
+      expect(res.headers.get("content-security-policy"), path).toContain("script-src 'none'");
     }
   });
 
@@ -50,7 +51,7 @@ describe("the public pages", () => {
     const preview = await v.fetch(`/posts/${body.posts[0]?.id}/preview`);
     expect(preview.status).toBe(200);
     const html = await preview.text();
-    expect(html).not.toContain(BANNER);
+    expect(html).not.toContain(PILL);
     expect(html).not.toContain(RESET_PATH);
 
     const subject = `Chrome check ${crypto.randomUUID()}`;
@@ -63,11 +64,11 @@ describe("the public pages", () => {
         )
         .one(),
     );
-    expect(frozen.rendered_html).not.toContain(BANNER);
+    expect(frozen.rendered_html).not.toContain(PILL);
     const sent = fakeOutbox().filter((m) => m.subject === subject);
     expect(sent.length).toBeGreaterThan(0);
     for (const m of sent) {
-      expect(m.html).not.toContain(BANNER);
+      expect(m.html).not.toContain(PILL);
     }
   });
 
@@ -75,25 +76,21 @@ describe("the public pages", () => {
     const v = visitor();
     const res = await v.fetch("/posts");
     expect(res.headers.get("content-type")).toContain("application/json");
-    expect(await res.text()).not.toContain(BANNER);
+    expect(await res.text()).not.toContain(PILL);
   });
 });
 
-describe("the reset's confirmation page", () => {
-  it("asks first, and its form may post the reset", async () => {
+describe("the reset route", () => {
+  it("answers a GET with the dashboard, where the reset step lives", async () => {
     const v = visitor();
     await v.fetch("/posts");
-    const page = await v.fetch(RESET_PATH);
-    expect(page.status).toBe(200);
-    expect(formAction(page)).toBe("'self'");
-    expect(page.headers.get("x-robots-tag")).toBe("noindex");
-    const html = await page.text();
-    expect(html).toContain("Reset the demo?");
-    expect(html).toContain(`<form method="post" action="${RESET_PATH}">`);
-    expect(html).toContain('href="/dashboard/"'); // keep my changes
+    const res = await v.fetch(RESET_PATH, { redirect: "manual" });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/dashboard/");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex");
   });
 
-  it("posts what the route takes: a same-origin form submit, answered with the editor", async () => {
+  it("takes what the dashboard's form posts: a same-origin form submit, answered with the editor", async () => {
     const v = visitor();
     await v.fetch("/posts");
     const res = await v.fetch(RESET_PATH, {

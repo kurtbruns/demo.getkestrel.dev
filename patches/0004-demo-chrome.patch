@@ -1,33 +1,40 @@
-Demo chrome (kurtbruns/demo.getkestrel.dev#9)
+Demo chrome (kurtbruns/demo.getkestrel.dev#9, revised in #23)
 
-What: in the demo's auth mode ("demo", from 0001-demo-auth), the editor's identity chip
-reads "Demo sandbox" with no sign-out link, and a strip above the workspace says the
-sandbox is private and temporary, with "Reset demo" (a link to the demo Worker's own
-confirmation page, /_demo/reset) and a link to getkestrel.dev. The strip's height is
-published as --demo-h, which the full-height layout and the sticky sidebar subtract; on a
-phone it clears the fixed menu button. Every public page (card pages, the reader shell, a
-hosted post page) gets a matching strip pinned to the bottom, with "Open the editor" and
-"Reset demo". A client spec covers the editor side.
+What: Kestrel's dev-only "Open dashboard" pill, extended into a split pill in the same
+bottom-right corner on every surface. Its inverted tag reads "Demo" and opens a short
+note about the sandbox (a <details>, so it needs no script); the other half is the one
+action that matters there. On every public page (card pages, the reader shell, a hosted
+post page) that's "Open dashboard"; in the editor, "View publication", which the editor
+and the docs room otherwise lack. In the editor the note also carries "Reset demo...", a
+nested step whose Reset button posts to the demo Worker's /_demo/reset; Cancel, Escape
+and a click outside close what's open. The pill is fixed, so it adds nothing to the
+layout: it steps up over the save bar while it shows, and on a phone the toasts rise
+above it. In the demo's auth mode ("demo", from 0001-demo-auth) the identity chip reads
+"Demo sandbox" with no sign-out link. A client spec covers the editor side.
 
-Why: a visitor should always know they're in a disposable sandbox, and how to start over.
-The public strip rides the dev badge's injection points (devDashboardStyle and
-devDashboardBadge in src/lib/page.ts), which reach only pages as served, never a frozen
-render or a sent email (I3); in this build those helpers always emit the strip, so a
-future caller elsewhere would carry it too. Reset is a link, not a form, because a post
-page forbids form posts (form-action 'none') and every public page forbids script.
+Why: a visitor should always know they're in a disposable sandbox, and how to start
+over. #23 replaced #9's full-width strip, which sat at the bottom of the public pages
+but the top of the editor and made the editor scroll (its height, --demo-h, came off
+the layout). The public pill rides the dev pill's injection points (devDashboardStyle
+and devDashboardBadge in src/lib/page.ts), which reach only pages as served, never a
+frozen render or a sent email (I3); in this build those helpers always emit the demo
+pill in the dev pill's place, so a future caller elsewhere would carry it too. Reset
+lives in the editor only: resetting is a publisher action, and a public page could not
+carry the form anyway (a post page forbids form posts, form-action 'none').
 
 SPEC §11 says no public page links into the Access-gated admin; its one exception is the
-dev-only shortcut. The strip's "Open the editor" link departs from that on purpose: in
+dev-only shortcut. The pill's "Open dashboard" link departs from that on purpose: in
 the demo the editor has no Access wall (0001-demo-auth), and each visitor's editor is
 their own sandbox, so the reason for the rule doesn't hold. No I-invariant is touched.
 
-Kestrel's own server specs that assert the dev badge's absence (test/archive.spec.ts)
-fail on the patched tree, as its auth specs do under 0001; its client specs pass.
+Kestrel's own server specs that assert the dev pill's presence or absence
+(test/archive.spec.ts) fail on the patched tree, as its auth specs do under 0001; its
+client specs pass.
 
 See DESIGN.md, "Static assets and demo chrome" and "The patch set".
 
 diff --git a/client/auth.ts b/client/auth.ts
-index 6e317ec..cc4d509 100644
+index 6e317ec..0df1dc2 100644
 --- a/client/auth.ts
 +++ b/client/auth.ts
 @@ -37,7 +37,14 @@ export function authHeaders(): Record<string, string> {
@@ -41,41 +48,66 @@ index 6e317ec..cc4d509 100644
 +      identity,
 +      html`<span class="who demo" title="A private demo sandbox: no sign-in needed">Demo sandbox</span>`,
 +    );
-+    renderDemoBanner();
++    renderDemoPill();
 +  } else if (session?.auth.mode === "access") {
      const p = session.principal;
      const who = p.email || (p.kind === "service" ? "Service token" : "Signed in");
      setHtml(
-@@ -52,6 +59,34 @@ export function renderIdentity(): void {
+@@ -52,6 +59,59 @@ export function renderIdentity(): void {
    }
  }
  
 +/**
-+ * Demo sandbox (patched by demo.getkestrel.dev): a strip above the workspace saying the
-+ * sandbox is private and temporary, with the reset. Rendered once, outside the routed
-+ * view, so navigating never clears it. "Reset demo" links to the demo Worker's own
-+ * confirmation page, whose button resets and comes back here. The strip's height is kept
-+ * in --demo-h, so the full-height layout and the sticky sidebar make room for it.
++ * Demo sandbox (patched by demo.getkestrel.dev): the public pages' split pill, in the
++ * same corner. The "Demo" tag opens a note about the sandbox with the reset, a second
++ * step that posts to the demo Worker's /_demo/reset; "View publication" opens the
++ * public site, which the editor and the docs room otherwise lack. Fixed, so it adds
++ * nothing to the layout. Rendered once, outside the routed view, so navigating never
++ * clears it. Escape, a click outside, and Cancel close what's open.
 + */
-+function renderDemoBanner(): void {
-+  if (document.getElementById("demoBanner")) {
++function renderDemoPill(): void {
++  if (document.getElementById("demoPill")) {
 +    return;
 +  }
-+  const banner = document.createElement("div");
-+  banner.id = "demoBanner";
-+  banner.className = "demo-banner";
-+  banner.setAttribute("role", "note");
++  const pill = document.createElement("aside");
++  pill.id = "demoPill";
++  pill.className = "demo-pill";
++  pill.setAttribute("aria-label", "Kestrel demo");
 +  setHtml(
-+    banner,
-+    html`<span><strong>Demo sandbox.</strong> Your changes are private to this browser and are deleted after a day away. Nothing you send leaves the sandbox.</span><a class="demo-reset" href="/_demo/reset">Reset demo</a><a href="https://getkestrel.dev">About Kestrel</a>`,
++    pill,
++    html`<details class="demo-menu"><summary><span class="demo-tag">Demo<svg class="demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="demo-vh"> (about this demo)</span></summary><div class="demo-pop"><p class="demo-h">Your own copy of Kestrel</p><p class="demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away.</p><details class="demo-reset"><summary>Reset demo…</summary><div class="demo-confirm"><p>Discard everything you've changed and restore the sample?</p><div class="demo-acts"><form method="post" action="/_demo/reset"><button type="submit" class="danger">Reset</button></form><button type="button" class="secondary demo-cancel">Cancel</button></div></div></details><div class="demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel&nbsp;↗</a></div></div></details><span class="demo-sep" aria-hidden="true"></span><a class="demo-go" href="/" target="_blank" rel="noopener">View publication&nbsp;↗</a>`,
 +  );
-+  (document.querySelector(".layout") ?? app).before(banner);
-+  const publishHeight = () =>
-+    document.documentElement.style.setProperty("--demo-h", `${banner.offsetHeight}px`);
-+  publishHeight();
-+  if (typeof ResizeObserver !== "undefined") {
-+    new ResizeObserver(publishHeight).observe(banner);
-+  }
++  document.body.append(pill);
++  const menu = pill.querySelector<HTMLDetailsElement>(".demo-menu");
++  const step = pill.querySelector<HTMLDetailsElement>(".demo-reset");
++  const close = () => {
++    if (menu) {
++      menu.open = false;
++    }
++  };
++  // Closing the menu also closes the reset step, so it opens on the note next time.
++  menu?.addEventListener("toggle", () => {
++    if (!menu.open && step) {
++      step.open = false;
++    }
++  });
++  pill.querySelector(".demo-cancel")?.addEventListener("click", () => {
++    if (step) {
++      step.open = false;
++      step.querySelector("summary")?.focus();
++    }
++  });
++  document.addEventListener("keydown", (e) => {
++    if (e.key === "Escape" && menu?.open) {
++      close();
++      menu.querySelector("summary")?.focus();
++    }
++  });
++  document.addEventListener("click", (e) => {
++    if (menu?.open && !pill.contains(e.target as Node)) {
++      close();
++    }
++  });
 +}
 +
  /**
@@ -83,24 +115,33 @@ index 6e317ec..cc4d509 100644
   * recovery is a fresh document load that re-triggers the Access login. In dev this
 diff --git a/client/demo.spec.ts b/client/demo.spec.ts
 new file mode 100644
-index 0000000..4de2ec9
+index 0000000..2abad67
 --- /dev/null
 +++ b/client/demo.spec.ts
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,108 @@
 +// Demo sandbox (patched by demo.getkestrel.dev): in the demo's auth mode, the identity
-+// chip names the sandbox and the strip above the workspace links to the reset.
++// chip names the sandbox, and a split pill in the corner opens a note about it, with the
++// reset as a second step, and links to the public site.
 +
 +import { beforeEach, describe, expect, it } from "vitest";
 +import { renderIdentity } from "./auth";
 +import { appState } from "./state";
 +
 +function signIn(mode: "demo" | "dev"): void {
-+  document.getElementById("demoBanner")?.remove();
++  document.getElementById("demoPill")?.remove();
 +  appState.session = {
 +    principal: { kind: "human", email: mode === "demo" ? "demo@getkestrel.dev" : "dev@localhost" },
 +    auth: { mode },
 +  } as typeof appState.session;
 +  renderIdentity();
++}
++
++function pill(): HTMLElement {
++  const el = document.getElementById("demoPill");
++  if (!el) {
++    throw new Error("no demo pill");
++  }
++  return el;
 +}
 +
 +describe("demo mode", () => {
@@ -112,154 +153,362 @@ index 0000000..4de2ec9
 +    expect(identity?.querySelector("a[href*='logout']")).toBeNull();
 +  });
 +
-+  it("shows the sandbox banner, linking to the reset's confirmation page", () => {
-+    const banner = document.getElementById("demoBanner");
-+    expect(banner?.textContent).toContain("private to this browser");
-+    expect(banner?.querySelector("a.demo-reset")?.getAttribute("href")).toBe("/_demo/reset");
-+    expect(banner?.querySelector("form")).toBeNull();
-+    // It sits above the workspace, outside the routed view the router replaces.
-+    expect(banner?.nextElementSibling?.classList.contains("layout")).toBe(true);
-+    // Its height is published for the layout to make room for.
-+    expect(document.documentElement.style.getPropertyValue("--demo-h")).toMatch(/px$/);
++  it("shows the split pill: the Demo tag and View publication", () => {
++    const p = pill();
++    expect(p.getAttribute("aria-label")).toBe("Kestrel demo");
++    expect(p.querySelector(".demo-menu > summary")?.textContent).toContain("Demo");
++    const go = p.querySelector<HTMLAnchorElement>("a.demo-go");
++    expect(go?.textContent).toContain("View publication");
++    expect(go?.getAttribute("href")).toBe("/");
++    // It floats over the page, outside the routed view the router replaces.
++    expect(p.parentElement).toBe(document.body);
++    expect(p.closest(".layout")).toBeNull();
 +  });
 +
-+  it("renders the banner once, however often identity is rendered", () => {
++  it("opens a note about the sandbox, with About Kestrel", () => {
++    const menu = pill().querySelector<HTMLDetailsElement>(".demo-menu");
++    expect(menu?.open).toBe(false);
++    expect(menu?.textContent).toContain("Your own copy of Kestrel");
++    expect(menu?.textContent).toContain("Only this browser can see it.");
++    expect(menu?.querySelector("a[href='https://getkestrel.dev']")?.textContent).toContain(
++      "About Kestrel",
++    );
++  });
++
++  it("puts the reset behind a second step, whose form posts to the demo's reset", () => {
++    const step = pill().querySelector<HTMLDetailsElement>(".demo-reset");
++    expect(step?.querySelector("summary")?.textContent).toBe("Reset demo…");
++    expect(step?.open).toBe(false);
++    expect(step?.textContent).toContain("Discard everything you've changed");
++    const form = step?.querySelector("form");
++    expect(form?.getAttribute("method")).toBe("post");
++    expect(form?.getAttribute("action")).toBe("/_demo/reset");
++    expect(form?.querySelector("button[type='submit']")?.textContent).toBe("Reset");
++    // The only form in the pill is the reset's.
++    expect(pill().querySelectorAll("form")).toHaveLength(1);
++  });
++
++  it("closes the step on Cancel, and the menu on Escape or a click outside", () => {
++    const menu = pill().querySelector<HTMLDetailsElement>(".demo-menu");
++    const step = pill().querySelector<HTMLDetailsElement>(".demo-reset");
++    if (!menu || !step) {
++      throw new Error("no menu");
++    }
++    menu.open = true;
++    step.open = true;
++    pill().querySelector<HTMLButtonElement>(".demo-cancel")?.click();
++    expect(step.open).toBe(false);
++    expect(menu.open).toBe(true);
++
++    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
++    expect(menu.open).toBe(false);
++
++    menu.open = true;
++    document.body.click();
++    expect(menu.open).toBe(false);
++  });
++
++  it("renders the pill once, however often identity is rendered", () => {
 +    renderIdentity();
-+    expect(document.querySelectorAll("#demoBanner")).toHaveLength(1);
++    expect(document.querySelectorAll("#demoPill")).toHaveLength(1);
++  });
++
++  it("no longer renders the banner or publishes --demo-h", () => {
++    expect(document.getElementById("demoBanner")).toBeNull();
++    expect(document.querySelector(".demo-banner")).toBeNull();
++    expect(document.documentElement.style.getPropertyValue("--demo-h")).toBe("");
 +  });
 +});
 +
 +describe("other modes", () => {
-+  it("get no banner", () => {
++  it("get no pill", () => {
 +    signIn("dev");
-+    expect(document.getElementById("demoBanner")).toBeNull();
++    expect(document.getElementById("demoPill")).toBeNull();
 +    expect(document.getElementById("identity")?.textContent).toContain("Local dev");
 +  });
 +});
 diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
-index fda090a..786bf56 100644
+index fda090a..6ad8cb0 100644
 --- a/public/dashboard/styles.css
 +++ b/public/dashboard/styles.css
-@@ -781,6 +781,56 @@ body.nav-resizing .sidebar {
+@@ -781,6 +781,188 @@ body.nav-resizing .sidebar {
  .identity .who.dev {
    font-style: italic;
  }
-+/* Demo sandbox (patched by demo.getkestrel.dev): the identity chip, and the strip above
-+   the workspace (client/auth.ts, renderDemoBanner). */
++/* Demo sandbox (patched by demo.getkestrel.dev): the identity chip, and the split pill
++   (client/auth.ts, renderDemoPill): the public pages' dev pill, in the same corner,
++   fixed so it adds nothing to the layout. */
 +.identity .who.demo {
 +  color: var(--accent);
 +  font-weight: 600;
 +}
-+.demo-banner {
-+  display: flex;
-+  flex-wrap: wrap;
-+  align-items: center;
-+  justify-content: center;
-+  gap: 6px 16px;
-+  padding: 8px 16px;
-+  background: var(--accent-soft);
-+  color: var(--ink);
-+  border-bottom: 1px solid var(--line);
-+  font-size: 14px;
-+}
-+.demo-banner a {
-+  color: var(--accent);
-+  font-weight: 600;
-+}
-+.demo-banner .demo-reset {
-+  padding: 3px 12px;
-+  border: 1px solid var(--accent);
++.demo-pill {
++  position: fixed;
++  right: 18px;
++  bottom: 18px;
++  /* The save bar's rung; appended after it, so it paints on top. */
++  z-index: var(--z-bar);
++  display: inline-flex;
++  align-items: stretch;
 +  border-radius: 999px;
++  background: var(--accent);
++  color: var(--accent-on);
++  border: 1px solid var(--accent);
++  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
++  font-size: 13px;
++  font-weight: 600;
++  line-height: 1.6;
++  transition: bottom 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.demo-menu {
++  display: flex;
++}
++.demo-menu > summary {
++  display: flex;
++  align-items: center;
++  padding: 0 5px 0 10px;
++  border-radius: 999px 0 0 999px;
++  list-style: none;
++  cursor: pointer;
++}
++.demo-pill summary::-webkit-details-marker {
++  display: none;
++}
++/* The dev pill's inverted tag, so the small label clears AA on the accent. */
++.demo-tag {
++  display: inline-flex;
++  align-items: center;
++  gap: 3px;
++  font-size: 9.5px;
++  letter-spacing: 0.09em;
++  text-transform: uppercase;
++  font-weight: 700;
++  padding: 2px 7px;
++  border-radius: 999px;
++  background: var(--accent-on);
++  color: var(--accent);
++}
++.demo-menu > summary:hover .demo-tag {
++  filter: brightness(0.94);
++}
++.demo-chev {
++  width: 11px;
++  height: 11px;
++  fill: none;
++  stroke: currentColor;
++  stroke-width: 2;
++  stroke-linecap: round;
++  stroke-linejoin: round;
++  transition: transform 0.15s;
++}
++.demo-menu[open] .demo-chev {
++  transform: rotate(180deg);
++}
++.demo-sep {
++  width: 1px;
++  margin: 9px 0;
++  background: color-mix(in srgb, var(--accent-on) 35%, transparent);
++}
++.demo-go {
++  display: inline-flex;
++  align-items: center;
++  padding: 9px 15px 9px 9px;
++  border-radius: 0 999px 999px 0;
++  color: inherit;
++  text-decoration: none;
++  white-space: nowrap;
++}
++.demo-go:hover {
++  text-decoration: underline;
++}
++.demo-pill :is(a, summary):focus-visible {
++  outline: 2px solid var(--ring);
++  outline-offset: 2px;
++}
++.demo-vh {
++  position: absolute;
++  width: 1px;
++  height: 1px;
++  overflow: hidden;
++  clip: rect(0 0 0 0);
++  white-space: nowrap;
++}
++.demo-pop {
++  position: absolute;
++  right: 0;
++  bottom: calc(100% + 10px);
++  width: min(300px, calc(100vw - 24px));
++  padding: 16px 16px 12px;
++  border-radius: 12px;
++  background: var(--card);
++  color: var(--fg);
++  border: 1px solid var(--line);
++  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
++  font-weight: 400;
++  cursor: auto;
++}
++.demo-h {
++  font-size: 15px;
++  font-weight: 650;
++  letter-spacing: -0.01em;
++  margin: 0 0 4px;
++}
++.demo-p {
++  font-size: 13.5px;
++  color: var(--muted);
++  margin: 0 0 12px;
++}
++.demo-reset {
++  margin: 0 0 12px;
++}
++.demo-reset > summary {
++  display: inline-block;
++  font-size: 13px;
++  font-weight: 600;
++  color: var(--accent);
++  border-radius: 6px;
++  cursor: pointer;
++}
++.demo-reset > summary:hover {
++  text-decoration: underline;
++}
++.demo-confirm {
++  margin-top: 10px;
++  padding: 12px;
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  background: var(--bg);
++}
++.demo-confirm p {
++  margin: 0 0 10px;
++  font-size: 13.5px;
++}
++.demo-acts {
++  display: flex;
++  gap: 8px;
++}
++.demo-acts form {
++  margin: 0;
++}
++.demo-foot {
++  border-top: 1px solid var(--line);
++  padding-top: 10px;
++  font-size: 12.5px;
++}
++.demo-foot a {
++  color: var(--muted);
 +  text-decoration: none;
 +}
-+/* The strip sits above the full-height layout; its height (--demo-h, set by
-+   renderDemoBanner, 0 elsewhere) comes off the layout's and the sticky sidebar's. */
-+:root {
-+  --demo-h: 0px;
++.demo-foot a:hover {
++  color: var(--fg);
++  text-decoration: underline;
 +}
-+.layout {
-+  min-height: calc(100vh - var(--demo-h));
-+}
-+.sidebar-inner {
-+  height: calc(100dvh - var(--demo-h));
++/* Step up over the save bar while it shows, rather than sit on its actions. */
++body:has(.savebar.show) .demo-pill {
++  bottom: 80px;
 +}
 +@media (max-width: 539px) {
-+  /* Clear the fixed hamburger at the top left; the drawer is full height again. */
-+  .demo-banner {
-+    justify-content: flex-start;
-+    min-height: 64px;
-+    padding-left: 64px;
++  .demo-pill {
++    right: 12px;
++    bottom: 12px;
 +  }
-+  .sidebar-inner {
-+    height: 100dvh;
++  /* The save bar stacks to two rows here. */
++  body:has(.savebar.show) .demo-pill {
++    bottom: 120px;
 +  }
 +}
  .identity a.ghost {
    font-size: 13px;
    color: var(--muted);
+@@ -2439,6 +2621,13 @@ th.num .th-sort {
+ .toast.show {
+   opacity: 1;
+ }
++/* Demo sandbox (patched by demo.getkestrel.dev): on a phone the demo pill sits where the
++   toasts are centred, so they rise above it. */
++@media (max-width: 539px) {
++  body:has(.demo-pill) #toasts {
++    bottom: 64px;
++  }
++}
+ 
+ /* modal */
+ .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index fcd1285..207da04 100644
+index fcd1285..ded6b85 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
-@@ -241,10 +241,43 @@ export interface ReaderIdentity {
+@@ -241,23 +241,64 @@ export interface ReaderIdentity {
    logoUrl?: string;
  }
  
-+/* Demo sandbox (patched by demo.getkestrel.dev): a strip pinned to the bottom of every
-+   public page saying this publication is a private, temporary sandbox, with the way into
-+   the editor and the reset. It rides the dev badge's injection points, so it reaches the
-+   card pages, the reader shell and a hosted post page, but never a frozen render or a
-+   sent email (I3). Self-contained, like the badge, because two of those pages have none
-+   of the reader tokens. */
-+const DEMO_BANNER_STYLE = `
-+:root { --d-bg:#eef1fb; --d-ink:#1b1a17; --d-line:#d5dbf2; --d-accent:#3355cc; --d-accent-on:#ffffff; }
-+@media (prefers-color-scheme: dark) { :root { --d-bg:#1b1f2e; --d-ink:#e5e7eb; --d-line:#2c3350; --d-accent:#7d9bff; --d-accent-on:#10131f; } }
-+body { padding-bottom:72px; }
-+.d-demo { position:fixed; left:0; right:0; bottom:0; z-index:60; display:flex; flex-wrap:wrap; align-items:center;
-+          justify-content:center; gap:6px 14px; padding:10px 16px; background:var(--d-bg); color:var(--d-ink);
-+          border-top:1px solid var(--d-line);
-+          font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
-+.d-demo a { color:var(--d-accent); font-weight:600; text-decoration:none; }
-+.d-demo a:hover { text-decoration:underline; }
-+.d-demo .d-reset { padding:3px 12px; border-radius:999px; border:1px solid var(--d-accent); }
-+.d-demo .d-open { padding:4px 12px; border-radius:999px; background:var(--d-accent); color:var(--d-accent-on); }
-+.d-demo a:focus-visible { outline:2px solid var(--d-accent); outline-offset:2px; }
-+/* On a phone the strip wraps to a few lines; keep it compact and the page clear of it. */
-+@media (max-width: 640px) {
-+  body { padding-bottom:150px; }
-+  .d-demo { font-size:13px; gap:6px 10px; padding:8px 12px; }
-+  .d-demo .d-about { display:none; }
-+}
++/* Demo sandbox (patched by demo.getkestrel.dev): the dev pill, extended into a split pill
++   on every public page: a "Demo" tag that opens a short note about the sandbox (a
++   <details>, since these pages run no script), and "Open dashboard". It rides the dev
++   pill's injection points, so it reaches the card pages, the reader shell and a hosted
++   post page, but never a frozen render or a sent email (I3). It wears the dev pill's
++   accent tokens (DEV_BADGE_STYLE, emitted beside it) and adds the note's card colors. */
++const DEMO_PILL_STYLE = `
++:root { --k-card:#ffffff; --k-ink:#18181b; --k-mut:#52525b; --k-line:#e4e4e7; --k-ring:#2563eb; }
++@media (prefers-color-scheme: dark) { :root { --k-card:#232327; --k-ink:#ededed; --k-mut:#a1a1aa; --k-line:#3a3a41; --k-ring:#60a5fa; } }
++.r-demo { position:fixed; right:18px; bottom:18px; z-index:50; display:inline-flex; align-items:stretch;
++          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; line-height:1.6;
++          font-size:13px; font-weight:600; text-align:left; border-radius:999px;
++          background:var(--k-accent); color:var(--k-accent-contrast); border:1px solid var(--k-accent);
++          box-shadow:0 6px 20px rgba(0,0,0,.22); }
++.r-demo details { display:flex; margin:0; }
++.r-demo summary { display:flex; align-items:center; padding:0 5px 0 10px; border-radius:999px 0 0 999px;
++                  list-style:none; cursor:pointer; }
++.r-demo summary::-webkit-details-marker { display:none; }
++.r-demo .r-dev-tag { display:inline-flex; align-items:center; gap:3px; font-size:9.5px; letter-spacing:.09em;
++                     text-transform:uppercase; font-weight:700; padding:2px 7px; border-radius:999px;
++                     background:var(--k-accent-contrast); color:var(--k-accent); }
++.r-demo summary:hover .r-dev-tag { filter:brightness(.94); }
++.r-demo-chev { width:11px; height:11px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round;
++               stroke-linejoin:round; transition:transform .15s; }
++.r-demo details[open] .r-demo-chev { transform:rotate(180deg); }
++.r-demo-sep { width:1px; margin:9px 0; background:color-mix(in srgb, var(--k-accent-contrast) 35%, transparent); }
++.r-demo-go { display:inline-flex; align-items:center; padding:9px 15px 9px 9px; border-radius:0 999px 999px 0;
++             color:inherit; text-decoration:none; white-space:nowrap; }
++.r-demo-go:hover { text-decoration:underline; }
++.r-demo-pop { position:absolute; right:0; bottom:calc(100% + 10px); box-sizing:border-box;
++              width:min(300px, calc(100vw - 24px)); padding:16px 16px 12px; border-radius:12px;
++              background:var(--k-card); color:var(--k-ink); border:1px solid var(--k-line);
++              box-shadow:0 6px 20px rgba(0,0,0,.22); font-weight:400; cursor:auto; }
++.r-demo-h { font-size:15px; font-weight:650; letter-spacing:-.01em; margin:0 0 4px; }
++.r-demo-p { font-size:13.5px; color:var(--k-mut); margin:0 0 12px; }
++.r-demo-foot { border-top:1px solid var(--k-line); padding-top:10px; font-size:12.5px; }
++.r-demo-foot a { color:var(--k-mut); text-decoration:none; }
++.r-demo-foot a:hover { color:var(--k-ink); text-decoration:underline; }
++.r-demo :is(a, summary):focus-visible { outline:2px solid var(--k-ring); outline-offset:2px; }
++.r-demo-vh { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
++@media (max-width:560px) { .r-demo { right:12px; bottom:12px; } }
 +`;
-+
-+// Reset is a link to the demo's confirmation page, not a form here: a post page forbids
-+// form posts (POST_PAGE_SECURITY_HEADERS' form-action 'none', so a form in a post's body
-+// can't act on the admin API) and every public page forbids script, so the confirm step
-+// is a page of its own.
-+const DEMO_BANNER = `<div class="d-demo" role="note"><span><strong>Kestrel demo.</strong> This publication is your own private sandbox. It resets after a day away, and nothing you send leaves it.</span><a class="d-open" href="/dashboard/">Open the editor &rarr;</a><a class="d-reset" href="/_demo/reset">Reset demo</a><a class="d-about" href="https://getkestrel.dev">About Kestrel</a></div>`;
 +
  /** The pill's stylesheet, emitted beside it and only when it is, so a deployed page
 - *  carries neither the link nor its styles. */
-+ *  carries neither the link nor its styles. (Patched: the demo strip's always.) */
- function devDashboardStyle(url?: string): string {
+-function devDashboardStyle(url?: string): string {
 -  return url ? `<style>${DEV_BADGE_STYLE}</style>` : "";
-+  return `<style>${DEMO_BANNER_STYLE}</style>${url ? `<style>${DEV_BADGE_STYLE}</style>` : ""}`;
++ *  carries neither the link nor its styles. (Patched: the demo pill's always.) */
++function devDashboardStyle(_url?: string): string {
++  return `<style>${DEV_BADGE_STYLE}${DEMO_PILL_STYLE}</style>`;
  }
  
  /** The dev-only editor shortcut (SPEC §5/§11): a fixed corner pill linking a local
-@@ -255,9 +288,12 @@ function devDashboardStyle(url?: string): string {
+  *  developer straight into `/dashboard`. Rendered only when `url` is set — the
+  *  callers pass it solely on a dev-shaped instance (`config.devMode`), where
+  *  `/dashboard` carries no Access wall — so it is structurally absent once deployed
+- *  and never turns a public page into a link toward the admin gate. */
++ *  and never turns a public page into a link toward the admin gate.
++ *  (Patched: the demo's split pill, always, in the dev pill's place. The reset lives in
++ *  the dashboard only, so these pages carry no form.) */
  function devDashboardBadge(url?: string): string {
-   // The "DEV" chip flags it as tooling; the title spells out the scope for anyone
-   // who wonders whether it ships — it never does (see the doc above).
+-  // The "DEV" chip flags it as tooling; the title spells out the scope for anyone
+-  // who wonders whether it ships — it never does (see the doc above).
 -  return url
 -    ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
 -    : "";
-+  return (
-+    DEMO_BANNER +
-+    (url
-+      ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
-+      : "")
-+  );
++  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Your own copy of Kestrel</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url ?? "/dashboard/")}">Open dashboard &rarr;</a></aside>`;
  }
  
  /** The dev-only shortcut's browser-only chrome for a hosted post page, which is not
