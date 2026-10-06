@@ -52,7 +52,7 @@ The cookie (`__Host-kestrel_demo`) carries a random 256-bit session token and an
 
 Only a GET starts a session. The editor's first requests are GETs, while a cookieless write is another site's form posting here (a `SameSite=Lax` cookie isn't sent on a cross-site POST), and starting a session for it would replace the visitor's own. A cookieless POST, PUT, DELETE, HEAD or OPTIONS gets a 403 with no cookie and no sandbox. Two tabs opened at the same instant, before either has a cookie, get two sandboxes; the last cookie wins, and the other tab finds its sandbox gone on its next request. That's acceptable for a demo.
 
-Every sandbox response is private. Kestrel marks its public pages and media `public`, but in the demo every page is one visitor's own and the same URL names different content in different sandboxes. So the Worker rewrites `public` to `private` (and sets `private` where Kestrel sets nothing, as on its errors), adds `Vary: Cookie`, and sends `private, no-store` on a response that starts a session, since it carries the cookie. If a sandbox can't start (its migrate or seed throws), the Worker logs `demo.sandbox_failed` and answers a 503 asking the visitor to reload. It still hands over a new session's cookie, so the reload retries the same sandbox rather than starting another.
+Every sandbox response is private. Kestrel marks its public pages and media `public`, but in the demo every page is one visitor's own and the same URL names different content in different sandboxes. So the Worker rewrites `public` to `private` (and sets `private` where Kestrel sets nothing, as on its errors, and makes HTML `private, no-cache`, so a page always revalidates after an edit, a reset or the idle wipe), adds `Vary: Cookie`, and sends `private, no-store` on a response that starts a session, since it carries the cookie. If a sandbox can't start (its migrate or seed throws), the Worker logs `demo.sandbox_failed` and answers a 503 asking the visitor to reload. It still hands over a new session's cookie, so the reload retries the same sandbox rather than starting another.
 
 ## The safety property
 
@@ -122,7 +122,7 @@ Planned patches:
 | `0001-demo-auth` | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request; `whoami` and the settings reflection report the auth mode as `demo`, and the client's types, curl snippet (no credential headers) and settings label accept it | #2 |
 | `0002-fake-outbox-bound` | keeps only the newest 500 messages in the fake transport's and the fake notifier's in-memory outboxes, and the newest 5,000 keys in the fake transport's idempotency map (dedup is best-effort: the window is shared by every sandbox in an isolate, and a missed dedup only adds a duplicate row to the fake outbox, never a second delivery record) | #6 |
 | `0003-demo-noindex` | adds a rule giving every static asset `X-Robots-Tag: noindex` to Kestrel's `public/_headers` (static assets are served before the Worker runs, so their headers come only from that file) | #7 |
-| `0004-demo-chrome` (planned) | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
+| `0004-demo-chrome` | in demo auth mode, the editor's "Demo sandbox" chip and a sandbox strip with "Reset demo"; on every public page, a matching strip with "Open the editor" and "Reset demo"; a client spec for the editor side | #9 |
 
 Why a patch set, over the two alternatives considered:
 
@@ -162,7 +162,10 @@ Rejected along the way: a loopback-origin shim (`APP_ORIGIN=http://localhost` wi
 
 ### Static assets and demo chrome
 
-Kestrel serves `/dashboard/` from Workers static assets (`assets.directory: ./dist/public`, `not_found_handling: none`), which bypass the Worker. The demo serves the same built tree the same way. Since the shell is identical for every visitor, serving it from assets doesn't weaken the safety property. The demo banner ("Sandbox: your changes are private and reset after 24h"), the "Reset demo" button and the "Demo" identity chip are the demo-chrome patch: in Kestrel's admin client, keyed on `auth.mode === "demo"`, and in the page chrome of Kestrel's server-rendered public pages (`/`, `/archive/*`). That keeps them in Kestrel's own markup and CSS tokens rather than injected from outside. The reset button posts to the wrapper's reset route (see "Lifecycle").
+Kestrel serves `/dashboard/` from Workers static assets (`assets.directory: ./dist/public`, `not_found_handling: none`), which bypass the Worker. The demo serves the same built tree the same way. Since the shell is identical for every visitor, serving it from assets doesn't weaken the safety property. The demo chrome is `patches/0004-demo-chrome.patch`, so it lives in Kestrel's own markup and CSS tokens rather than being injected from outside:
+
+- **The editor:** when `whoami` reports `auth.mode === "demo"`, the identity chip reads "Demo sandbox" with no sign-out link. A strip above the whole workspace, rendered once and outside the routed view, says the sandbox is private and temporary, and carries a "Reset demo" button (a confirmed, same-origin form post to `/_demo/reset`) and a link to getkestrel.dev.
+- **Every public page:** card pages, the reader shell and a hosted post page get a matching strip pinned to the bottom, with "Open the editor" and "Reset demo". It rides the injection points of Kestrel's dev-only dashboard badge (`devDashboardStyle` and `devDashboardBadge` in `src/lib/page.ts`), which reach only pages as served, never a frozen render or a sent email (I3). On a phone the strip is compact, and the page is padded clear of it.
 
 ## Media
 

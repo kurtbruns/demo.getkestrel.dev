@@ -203,10 +203,10 @@ describe("hardening", () => {
     expect(first.headers.get("cache-control")).toBe("private, no-store");
     expect(first.headers.get("vary")).toMatch(/cookie/i);
     await first.arrayBuffer();
-    // Kestrel marks its landing page `public, max-age=300`; in a sandbox it's private.
+    // Kestrel marks its landing page `public, max-age=300`; in a sandbox it's private and
+    // revalidated, so a reset or an edit shows at once.
     const again = await v.fetch("/");
-    expect(again.headers.get("cache-control")).toMatch(/^private\b/);
-    expect(again.headers.get("cache-control")).not.toMatch(/public/);
+    expect(again.headers.get("cache-control")).toBe("private, no-cache");
     expect(again.headers.get("vary")).toMatch(/cookie/i);
     await again.arrayBuffer();
   });
