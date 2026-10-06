@@ -122,7 +122,7 @@ describe("Kestrel in a sandbox", () => {
 
   it("seeds once per Kestrel version, and again after a version change", async () => {
     await runInDurableObject(await me.sandbox(), async (instance: SandboxDO) => {
-      const senv = sandboxEnv(env, instance.db.asD1(), instance.media.asR2());
+      const senv = sandboxEnv(env, instance.db.asD1(), instance.media.seedView());
       expect(await ensureSeeded(senv, BUILD_INFO.tag)).toBe(false);
       expect(await ensureSeeded(senv, "v0.0.0-older")).toBe(true);
       expect(await ensureSeeded(senv, "v0.0.0-older")).toBe(false);

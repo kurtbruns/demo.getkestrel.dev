@@ -3,14 +3,18 @@
  *
  * Every key Kestrel uses is rewritten under the sandbox's own prefix,
  * `sessions/<sandbox id>/`, so a sandbox can only address its own objects. The seed's images
- * are the exception: while seeding, writes go once to a prefix every sandbox shares,
- * `seed/<kestrel tag>/`, and a sandbox's read of a key it doesn't hold falls back there, so a
- * new sandbox writes no image bytes. Deleting a key leaves a tombstone, so a deleted seed
- * image (a removed logo, a deleted post's cover) stays deleted for that sandbox.
+ * are the exception: the seed writes them through a separate view (`seedView`) to a prefix
+ * every sandbox shares, `seed/<kestrel tag>/`, once, and a sandbox's read of a key it doesn't
+ * hold falls back there, so a new sandbox writes no image bytes. Only the seed is ever handed
+ * that view; the bucket Kestrel's request handlers see can never write to the shared prefix.
+ * Deleting a key leaves a tombstone, so a deleted seed image (a removed logo, a deleted
+ * post's cover) stays deleted for that sandbox.
  *
  * Uploads are capped per object and per sandbox, with the byte count and tombstones kept in
  * the sandbox's own SQLite. Over a cap, `put` throws Kestrel's own `HttpError(413)`, which
- * Kestrel's router answers as a 413 with its usual error body, and nothing is written.
+ * Kestrel's router answers as a 413 with its usual error body, and nothing is written. The
+ * size is reserved before the bytes go to R2, so uploads running in parallel (a DO serves
+ * other requests while it awaits R2) can't pass the cap together.
  *
  * Kestrel uses `get`, `put` (with `httpMetadata`) and `delete`; `head` and `list` are here
  * for the demo's own use, and `list` stays inside the sandbox's prefix.
@@ -18,7 +22,8 @@
 
 import { HttpError } from "kestrel";
 
-/** The largest object a visitor may upload: under Kestrel's own 5 MB image cap. */
+/** The largest object a visitor may upload. It binds post images (Kestrel's own cap is
+ *  5 MB); the logo has Kestrel's tighter 512 KB cap already. */
 export const MAX_OBJECT_BYTES = 2 * 1024 * 1024;
 /** The most a sandbox may hold in uploads, beside the shared seed images. */
 export const MAX_SANDBOX_BYTES = 20 * 1024 * 1024;
@@ -50,22 +55,25 @@ function byteLength(value: PutValue): number | undefined {
   return undefined; // a stream: unknown until read
 }
 
-/** A key as Kestrel names it: relative, with no empty, `.` or `..` segments. */
-function checkKey(key: string): string {
+/**
+ * A key as Kestrel names it: relative, with no empty, `.` or `..` segments. Anything else is
+ * Kestrel's own `HttpError`, so its router answers a 4xx rather than a 500: a 404 where the
+ * key came from a URL (`/media/:key`, which the router decodes), a 400 for a write.
+ */
+function checkKey(key: string, status: 400 | 404): string {
   if (
     key === "" ||
     key.startsWith("/") ||
     key.split("/").some((s) => s === "" || s === "." || s === "..")
   ) {
-    throw new Error(`media key refused: ${JSON.stringify(key)}`);
+    throw status === 404
+      ? new HttpError(404, "not_found", "media not found")
+      : new HttpError(400, "bad_media_key", `media key refused: ${JSON.stringify(key)}`);
   }
   return key;
 }
 
 export class SandboxMedia {
-  /** While true, writes go to the shared seed prefix (see `seeding`). */
-  private seedMode = false;
-
   constructor(
     private readonly bucket: R2Bucket,
     private readonly sql: SqlStorage,
@@ -75,25 +83,44 @@ export class SandboxMedia {
     readonly seedPrefix: string,
     private readonly caps = { object: MAX_OBJECT_BYTES, sandbox: MAX_SANDBOX_BYTES },
   ) {
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS demo_media (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL) STRICT",
-    );
-    sql.exec("CREATE TABLE IF NOT EXISTS demo_media_tombstones (key TEXT PRIMARY KEY) STRICT");
+    this.init();
   }
 
-  /** As Kestrel's code sees it: the `R2Bucket` type. */
+  /** Create the wrapper's own tables; again after the sandbox's storage is wiped (#8). */
+  init(): void {
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS demo_media (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL) STRICT",
+    );
+    this.sql.exec("CREATE TABLE IF NOT EXISTS demo_media_tombstones (key TEXT PRIMARY KEY) STRICT");
+  }
+
+  /** As Kestrel's request handlers see it: the `R2Bucket` type, scoped to this sandbox. */
   asR2(): R2Bucket {
     return this as unknown as R2Bucket;
   }
 
-  /** Run Kestrel's seed with writes going to the shared seed prefix. */
-  async seeding<T>(run: () => Promise<T>): Promise<T> {
-    this.seedMode = true;
-    try {
-      return await run();
-    } finally {
-      this.seedMode = false;
-    }
+  /**
+   * The bucket only Kestrel's seed is given: a `put` writes the shared seed copy (once) and
+   * drops anything of this sandbox's that would shadow it, so a re-seed restores the seed's
+   * images. Reads behave as the sandbox's own. Never handed to a request handler.
+   */
+  seedView(): R2Bucket {
+    const view = {
+      get: (key: string, options?: R2GetOptions) => this.get(key, options),
+      head: (key: string) => this.head(key),
+      put: async (key: string, value: PutValue, options?: R2PutOptions) => {
+        checkKey(key, 400);
+        await this.bucket.delete(this.sessionPrefix + key);
+        this.sql.exec("DELETE FROM demo_media WHERE key = ?", key);
+        this.sql.exec("DELETE FROM demo_media_tombstones WHERE key = ?", key);
+        return (
+          (await this.bucket.head(this.seedPrefix + key)) ??
+          (await this.bucket.put(this.seedPrefix + key, value, options))
+        );
+      },
+      delete: (keys: string | string[]) => this.delete(keys),
+    };
+    return view as unknown as R2Bucket;
   }
 
   /** The bytes this sandbox's uploads hold. */
@@ -109,7 +136,7 @@ export class SandboxMedia {
   }
 
   async get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | R2Object | null> {
-    checkKey(key);
+    checkKey(key, 404);
     if (this.tombstoned(key)) {
       return null;
     }
@@ -120,7 +147,7 @@ export class SandboxMedia {
   }
 
   async head(key: string): Promise<R2Object | null> {
-    checkKey(key);
+    checkKey(key, 404);
     if (this.tombstoned(key)) {
       return null;
     }
@@ -131,19 +158,7 @@ export class SandboxMedia {
   }
 
   async put(key: string, value: PutValue, options?: R2PutOptions): Promise<R2Object | null> {
-    checkKey(key);
-    this.sql.exec("DELETE FROM demo_media_tombstones WHERE key = ?", key);
-    if (this.seedMode) {
-      // The seed's own bytes, shared by every sandbox seeded from this Kestrel version: write
-      // them once, and drop any upload of this sandbox's that would shadow them, so a
-      // re-seed restores the seed's images.
-      await this.bucket.delete(this.sessionPrefix + key);
-      this.sql.exec("DELETE FROM demo_media WHERE key = ?", key);
-      return (
-        (await this.bucket.head(this.seedPrefix + key)) ??
-        (await this.bucket.put(this.seedPrefix + key, value, options))
-      );
-    }
+    checkKey(key, 400);
     const size = byteLength(value);
     if (size === undefined) {
       throw new MediaQuotaError("an upload must have a known size");
@@ -151,28 +166,40 @@ export class SandboxMedia {
     if (size > this.caps.object) {
       throw new MediaQuotaError(`an upload must be ${mb(this.caps.object)} MB or smaller`);
     }
-    const others = this.sql
-      .exec<{ n: number }>(
-        "SELECT coalesce(sum(bytes), 0) AS n FROM demo_media WHERE key != ?",
-        key,
-      )
-      .one().n;
+    // Check and reserve with no await between, so a parallel upload sees this one's size.
+    const previous = this.sql
+      .exec<{ bytes: number }>("SELECT bytes FROM demo_media WHERE key = ?", key)
+      .toArray()[0]?.bytes;
+    const others = this.usedBytes() - (previous ?? 0);
     if (others + size > this.caps.sandbox) {
       throw new MediaQuotaError(
         `this demo sandbox holds at most ${mb(this.caps.sandbox)} MB of uploads`,
       );
     }
-    const object = await this.bucket.put(this.sessionPrefix + key, value, options);
     this.sql.exec(
       "INSERT INTO demo_media (key, bytes) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET bytes = excluded.bytes",
       key,
       size,
     );
+    let object: R2Object | null;
+    try {
+      object = await this.bucket.put(this.sessionPrefix + key, value, options);
+    } catch (err) {
+      // Give back the reservation: the object is as it was.
+      if (previous === undefined) {
+        this.sql.exec("DELETE FROM demo_media WHERE key = ?", key);
+      } else {
+        this.sql.exec("UPDATE demo_media SET bytes = ? WHERE key = ?", previous, key);
+      }
+      throw err;
+    }
+    // Only a write that landed undoes a delete.
+    this.sql.exec("DELETE FROM demo_media_tombstones WHERE key = ?", key);
     return object;
   }
 
   async delete(keys: string | string[]): Promise<void> {
-    const list = (Array.isArray(keys) ? keys : [keys]).map(checkKey);
+    const list = (Array.isArray(keys) ? keys : [keys]).map((k) => checkKey(k, 400));
     await this.bucket.delete(list.map((k) => this.sessionPrefix + k));
     for (const key of list) {
       this.sql.exec("DELETE FROM demo_media WHERE key = ?", key);
@@ -184,7 +211,7 @@ export class SandboxMedia {
   async list(options: R2ListOptions = {}): Promise<R2Objects> {
     const prefix = options.prefix ?? "";
     if (prefix.startsWith("/") || prefix.split("/").some((s) => s === "." || s === "..")) {
-      throw new Error(`media prefix refused: ${JSON.stringify(prefix)}`);
+      throw new HttpError(400, "bad_media_key", `media prefix refused: ${JSON.stringify(prefix)}`);
     }
     const listed = await this.bucket.list({ ...options, prefix: this.sessionPrefix + prefix });
     return {
@@ -197,7 +224,7 @@ export class SandboxMedia {
     };
   }
 
-  /** Delete every object this sandbox holds (not the shared seed's), for its cleanup (#8). */
+  /** Delete every object this sandbox holds (not the shared seed's), and its records. */
   async clear(): Promise<void> {
     let cursor: string | undefined;
     do {

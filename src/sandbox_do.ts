@@ -35,6 +35,9 @@ export class SandboxDO extends DurableObject<Env> {
     `seed/${BUILD_INFO.tag}/`,
   );
   private readonly kenv: KestrelEnv = sandboxEnv(this.env, this.db.asD1(), this.media.asR2());
+  /** The seed's env: the same, but with the only media view that writes the shared seed
+   *  images. Never handed to a request handler. */
+  private readonly seedEnv: KestrelEnv = { ...this.kenv, MEDIA: this.media.seedView() };
   private starting: Promise<void> | undefined;
 
   /**
@@ -49,7 +52,8 @@ export class SandboxDO extends DurableObject<Env> {
     this.starting ??= this.ctx
       .blockConcurrencyWhile(async () => {
         migrate(this.ctx.storage, migrations);
-        await this.media.seeding(() => ensureSeeded(this.kenv, BUILD_INFO.tag));
+        // A re-seed first clears the sandbox's own uploads, which Kestrel's resetAll can't.
+        await ensureSeeded(this.seedEnv, BUILD_INFO.tag, () => this.media.clear());
       })
       .catch((err: unknown) => {
         this.starting = undefined;

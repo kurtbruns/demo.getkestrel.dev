@@ -4,6 +4,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { MAX_OBJECT_BYTES, SandboxMedia } from "../src/media";
+import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import { SAME_ORIGIN, type Visitor, visitor } from "./support";
 
 interface PostList {
@@ -140,14 +141,115 @@ describe("uploads", () => {
     await v.fetch("/posts");
     await runInDurableObject(await v.sandbox(), async (instance) => {
       for (const key of ["../other/x", "/abs", "a//b", "", "a/./b"]) {
-        await expect(instance.media.get(key), key).rejects.toThrow(/media key refused/);
-        await expect(instance.media.put(key, "x"), key).rejects.toThrow(/media key refused/);
+        // Kestrel's own HttpError, so its router answers a 4xx, never a 500.
+        await expect(instance.media.get(key), key).rejects.toMatchObject({ status: 404 });
+        await expect(instance.media.put(key, "x"), key).rejects.toMatchObject({ status: 400 });
       }
-      await expect(instance.media.list({ prefix: "../" })).rejects.toThrow(/prefix refused/);
+      await expect(instance.media.list({ prefix: "../" })).rejects.toMatchObject({ status: 400 });
       await instance.media.put("posts/p/x.png", new Uint8Array(3));
       const listed = await instance.media.list();
       expect(listed.objects.map((o) => o.key)).toEqual(["posts/p/x.png"]);
     });
+  });
+});
+
+describe("hardening", () => {
+  /** A media wrapper over a scratch prefix with small caps, inside a real sandbox DO. */
+  async function scratchMedia<T>(fn: (media: SandboxMedia) => Promise<T>): Promise<T> {
+    const v = visitor();
+    await v.fetch("/posts");
+    return runInDurableObject(await v.sandbox(), (_i, state) =>
+      fn(
+        new SandboxMedia(
+          env.MEDIA,
+          state.storage.sql,
+          `sessions/${crypto.randomUUID()}/`,
+          "seed/x/",
+          {
+            object: 100,
+            sandbox: 250,
+          },
+        ),
+      ),
+    );
+  }
+
+  it("holds the sandbox total against uploads running in parallel", async () => {
+    await scratchMedia(async (media) => {
+      const results = await Promise.allSettled(
+        Array.from({ length: 5 }, (_, i) => media.put(`p${i}.png`, new Uint8Array(100))),
+      );
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+      expect(results.filter((r) => r.status === "rejected")).toHaveLength(3);
+      expect(media.usedBytes()).toBe(200);
+    });
+  });
+
+  it("keeps a tombstone when a replacement upload is refused", async () => {
+    await scratchMedia(async (media) => {
+      await media.seedView().put("cover.png", new Uint8Array([7, 7, 7]));
+      expect(await media.get("cover.png")).not.toBeNull(); // the shared seed copy
+      await media.delete("cover.png");
+      expect(await media.get("cover.png")).toBeNull();
+      await expect(media.put("cover.png", new Uint8Array(101))).rejects.toMatchObject({
+        status: 413,
+      });
+      expect(await media.get("cover.png")).toBeNull(); // still deleted
+    });
+  });
+
+  it("answers a 404 or a 400, not a 500, for a key that would leave the sandbox", async () => {
+    const v = visitor();
+    const draft = await aDraft(v);
+    const traversal = await v.fetch("/media/posts/..%2F..%2Fx");
+    expect(traversal.status).toBe(404);
+    await traversal.arrayBuffer();
+    const dotdot = await upload(v, draft, "..", new Uint8Array([1]));
+    expect(dotdot.status).toBe(400);
+    await dotdot.arrayBuffer();
+  });
+
+  it("refuses an oversized or unsized upload before Kestrel reads it", async () => {
+    const v = visitor();
+    const draft = await aDraft(v);
+    const big = await upload(v, draft, "big.png", new Uint8Array(MAX_OBJECT_BYTES + 300 * 1024));
+    expect(big.status).toBe(413);
+    expect(((await big.json()) as { error: string }).error).toBe("upload_too_large");
+    const unsized = await v.fetch(`/posts/${draft}/images?filename=s.png`, {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-type": "image/png" },
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(new Uint8Array([1, 2, 3]));
+          c.close();
+        },
+      }),
+    });
+    expect(unsized.status).toBe(411);
+    await unsized.arrayBuffer();
+  });
+
+  it("writes the shared seed copy once, not again for each new sandbox", async () => {
+    await visitor().fetch(COVER);
+    const key = (await keysUnder("seed/")).find((k) => k.endsWith("/kestrel.webp")) ?? "";
+    const before = await env.MEDIA.head(key);
+    await visitor().fetch(COVER); // a second sandbox seeds
+    const after = await env.MEDIA.head(key);
+    expect(after?.uploaded.getTime()).toBe(before?.uploaded.getTime());
+    expect(after?.etag).toBe(before?.etag);
+  });
+
+  it("clears a sandbox's uploads when it's seeded again", async () => {
+    const v = visitor();
+    const draft = await aDraft(v);
+    expect((await upload(v, draft, "mine.png", new Uint8Array([1, 2]))).status).toBe(201);
+    const stub = await v.sandbox();
+    await runInDurableObject(stub, async (instance) => {
+      const senv = sandboxEnv(env, instance.db.asD1(), instance.media.seedView());
+      expect(await ensureSeeded(senv, "v0.0.0-other", () => instance.media.clear())).toBe(true);
+      expect(instance.media.usedBytes()).toBe(0);
+    });
+    expect(await keysUnder(await sandboxPrefix(v))).toEqual([]);
   });
 });
 
