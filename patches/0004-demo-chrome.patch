@@ -34,7 +34,7 @@ client specs pass.
 See DESIGN.md, "Static assets and demo chrome" and "The patch set".
 
 diff --git a/client/auth.ts b/client/auth.ts
-index 6e317ec..4da37b8 100644
+index 6e317ec..e5e9c7f 100644
 --- a/client/auth.ts
 +++ b/client/auth.ts
 @@ -37,7 +37,14 @@ export function authHeaders(): Record<string, string> {
@@ -77,7 +77,7 @@ index 6e317ec..4da37b8 100644
 +  pill.setAttribute("aria-label", "Kestrel demo");
 +  setHtml(
 +    pill,
-+    html`<details class="demo-menu"><summary><span class="demo-tag">Demo<svg class="demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="demo-vh"> (about this demo)</span></summary><div class="demo-pop"><p class="demo-h">Your own copy of Kestrel</p><p class="demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away.</p><details class="demo-reset"><summary>Reset demo…</summary><div class="demo-confirm"><p>Discard everything you've changed and restore the sample?</p><div class="demo-acts"><form method="post" action="/_demo/reset"><button type="submit" class="danger">Reset</button></form><button type="button" class="secondary demo-cancel">Cancel</button></div></div></details><div class="demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel&nbsp;↗</a></div></div></details><span class="demo-sep" aria-hidden="true"></span><a class="demo-go" href="/" target="_blank" rel="noopener">View publication&nbsp;↗</a>`,
++    html`<details class="demo-menu"><summary><span class="demo-tag">Demo<svg class="demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="demo-vh"> (about this demo)</span></summary><div class="demo-pop"><p class="demo-h">Kestrel demo sandbox</p><p class="demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away.</p><details class="demo-reset"><summary>Reset demo…</summary><div class="demo-confirm"><p>Discard everything you've changed and restore the sample?</p><div class="demo-acts"><form method="post" action="/_demo/reset"><button type="submit" class="danger">Reset</button></form><button type="button" class="secondary demo-cancel">Cancel</button></div></div></details><div class="demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel&nbsp;↗</a></div></div></details><span class="demo-sep" aria-hidden="true"></span><a class="demo-go" href="/" target="_blank" rel="noopener">View publication&nbsp;↗</a>`,
 +  );
 +  document.body.append(pill);
 +  const menu = pill.querySelector<HTMLDetailsElement>(".demo-menu");
@@ -122,7 +122,7 @@ index 6e317ec..4da37b8 100644
   * recovery is a fresh document load that re-triggers the Access login. In dev this
 diff --git a/client/demo.spec.ts b/client/demo.spec.ts
 new file mode 100644
-index 0000000..291ff4b
+index 0000000..d20ff34
 --- /dev/null
 +++ b/client/demo.spec.ts
 @@ -0,0 +1,131 @@
@@ -175,7 +175,7 @@ index 0000000..291ff4b
 +  it("opens a note about the sandbox, with About Kestrel", () => {
 +    const menu = pill().querySelector<HTMLDetailsElement>(".demo-menu");
 +    expect(menu?.open).toBe(false);
-+    expect(menu?.textContent).toContain("Your own copy of Kestrel");
++    expect(menu?.textContent).toContain("Kestrel demo sandbox");
 +    expect(menu?.textContent).toContain("Only this browser can see it.");
 +    expect(menu?.querySelector("a[href='https://getkestrel.dev']")?.textContent).toContain(
 +      "About Kestrel",
@@ -473,7 +473,7 @@ index fda090a..2125d4d 100644
  /* modal */
  .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index fcd1285..9874b02 100644
+index fcd1285..2a48a16 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
 @@ -241,23 +241,66 @@ export interface ReaderIdentity {
@@ -548,7 +548,7 @@ index fcd1285..9874b02 100644
 -  return url
 -    ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
 -    : "";
-+  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Your own copy of Kestrel</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url ?? "/dashboard/")}">Open dashboard &rarr;</a></aside>`;
++  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Kestrel demo sandbox</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url ?? "/dashboard/")}">Open dashboard &rarr;</a></aside>`;
  }
  
  /** The dev-only shortcut's browser-only chrome for a hosted post page, which is not

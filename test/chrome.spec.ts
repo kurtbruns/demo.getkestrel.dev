@@ -36,7 +36,7 @@ describe("the public pages", () => {
       expect(html, path).toMatch(
         /<a class="r-demo-go" href="\/dashboard\/">Open dashboard &rarr;<\/a>/,
       );
-      expect(html, path).toContain("Your own copy of Kestrel");
+      expect(html, path).toContain("Kestrel demo sandbox");
       // The reset lives in the dashboard: no public page links to it or carries its form.
       expect(html, path).not.toContain(RESET_PATH);
       // It opens with no script, which these pages forbid.
