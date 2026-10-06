@@ -55,3 +55,24 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
 
 /** Headers for a write the editor itself would send. */
 export const SAME_ORIGIN = { "content-type": "application/json", "sec-fetch-site": "same-origin" };
+
+/**
+ * Start sessions from one IP until the new-session rate limit refuses one (at most 25
+ * tries), returning every status and the refusal. The limiter counts in fixed one-minute
+ * windows, so a burst that straddles a window's end gets a fresh allowance partway; 25 is
+ * enough to reach a refusal even then.
+ */
+export async function exhaustNewSessions(
+  ip: string,
+): Promise<{ statuses: number[]; refused: Response | undefined }> {
+  const statuses: number[] = [];
+  for (let i = 0; i < 25; i++) {
+    const res = await SELF.fetch(`${BASE}/api/whoami`, { headers: { "cf-connecting-ip": ip } });
+    statuses.push(res.status);
+    if (res.status === 429) {
+      return { statuses, refused: res };
+    }
+    await res.arrayBuffer();
+  }
+  return { statuses, refused: undefined };
+}

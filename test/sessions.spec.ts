@@ -6,7 +6,7 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { rateLimitKey } from "../src/index";
 import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
-import { BASE, SAME_ORIGIN, visitor } from "./support";
+import { BASE, exhaustNewSessions, SAME_ORIGIN, visitor } from "./support";
 
 const SECRET = (env as unknown as { SESSION_SECRET: string }).SESSION_SECRET;
 
@@ -123,20 +123,9 @@ describe("a session", () => {
 
 describe("the new-session rate limit", () => {
   it("answers 429 past the per-IP limit, without a cookie or a sandbox", async () => {
-    const ip = "203.0.113.9";
-    const statuses: number[] = [];
-    let refused: Response | undefined;
-    for (let i = 0; i < 12; i++) {
-      const res = await SELF.fetch(`${BASE}/api/whoami`, { headers: { "cf-connecting-ip": ip } });
-      statuses.push(res.status);
-      if (res.status === 429) {
-        refused = res;
-      } else {
-        await res.arrayBuffer();
-      }
-    }
+    const { statuses, refused } = await exhaustNewSessions("203.0.113.9");
     expect(statuses.slice(0, 10)).toEqual(Array(10).fill(200));
-    expect(statuses.slice(10)).toEqual([429, 429]);
+    expect(refused?.status).toBe(429);
     expect(refused?.headers.get("set-cookie")).toBeNull();
     expect(refused?.headers.get("content-type")).toContain("text/html");
     expect(await refused?.text()).toContain("Too many new demos");
