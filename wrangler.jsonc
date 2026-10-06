@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "kestrel-demo",
+  "name": "kestrel-demo-dev",
   "main": "src/index.ts",
   // Kestrel's own date and flags (its wrangler.jsonc at the pinned tag), since its code runs here.
   "compatibility_date": "2026-08-22",
@@ -38,24 +38,29 @@
   // New sandboxes per IP per minute (src/index.ts). Each costs a migrate, a seed of several
   // hundred statements, and its storage; a returning visitor's cookie skips this.
   "ratelimits": [
-    { "name": "NEW_SESSIONS", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }
+    { "name": "NEW_SESSIONS", "namespace_id": "41001", "simple": { "limit": 10, "period": 60 } }
   ],
   "vars": {
     // The origin Kestrel's links use. Production sets https://demo.getkestrel.dev (#10).
     "APP_ORIGIN": "http://localhost:8788"
   },
   // Production, at demo.getkestrel.dev. Wrangler doesn't inherit bindings or vars into a
-  // named environment, so each is declared again here. Deploy it with
+  // named environment, so each is declared again here. The top level above is named
+  // kestrel-demo-dev, so a stray bare `wrangler deploy` lands on a separate Worker, never
+  // this one. Deploy it with
   // `npm run deploy` (CI does, once enabled; see README.md), never a bare `wrangler deploy`,
   // which would deploy the development config above.
   "env": {
     "production": {
       "name": "kestrel-demo",
+      // Served only at the custom domain: no *.workers.dev URL, no preview URLs.
+      "workers_dev": false,
+      "preview_urls": false,
       "vars": { "APP_ORIGIN": "https://demo.getkestrel.dev" },
       "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "kestrel-demo-media" }],
       "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "SandboxDO" }] },
       "ratelimits": [
-        { "name": "NEW_SESSIONS", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }
+        { "name": "NEW_SESSIONS", "namespace_id": "41001", "simple": { "limit": 10, "period": 60 } }
       ],
       // A Custom Domain: the first deploy creates its DNS record and certificate in the
       // getkestrel.dev zone, which must be in the same Cloudflare account.

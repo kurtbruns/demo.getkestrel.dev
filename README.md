@@ -25,13 +25,13 @@ Each visitor (each session cookie) gets a sandbox of their own, which migrates a
 
 ## Deploy
 
-Production is the `production` env in `wrangler.jsonc`, served at demo.getkestrel.dev. `.github/workflows/deploy.yml` deploys it on every push to `main` (and on demand), after the same build, check and tests as CI, but only once the repo variable `DEPLOY_ENABLED` is `true`. Deploy by hand with `npm run deploy`, never a bare `wrangler deploy`, which would deploy the development config.
+Production is the `production` env in `wrangler.jsonc`: the `kestrel-demo` Worker, served only at demo.getkestrel.dev. `.github/workflows/deploy.yml` deploys it on every push to `main` (and on demand from `main`), after the same build, check and tests as CI, but only once the repo variable `DEPLOY_ENABLED` is `true`. Deploy by hand with `npm run deploy`. A bare `wrangler deploy` deploys the development config to a separate Worker, `kestrel-demo-dev`, and never touches production.
 
 One-time setup, in this order:
 
 1. **R2 bucket.** `npx wrangler r2 bucket create kestrel-demo-media`, in the Cloudflare account that holds the getkestrel.dev zone.
-2. **API token.** In the Cloudflare dashboard, create a token from the "Edit Cloudflare Workers" template, limited to that account and the getkestrel.dev zone. Deploying the Worker, its Durable Object and its Custom Domain needs Workers Scripts, Workers Routes and the zone's DNS.
-3. **GitHub secrets.** In this repo's Settings → Environments, create `production` and add `CLOUDFLARE_API_TOKEN` (the token) and `CLOUDFLARE_ACCOUNT_ID`.
-4. **Enable and deploy.** Set the repo variable `DEPLOY_ENABLED` to `true` (Settings → Secrets and variables → Actions → Variables), then run the Deploy workflow (Actions → Deploy → Run workflow). The first deploy creates the `kestrel-demo` Worker, and the Custom Domain creates the `demo.getkestrel.dev` DNS record and certificate in the getkestrel.dev zone.
+2. **API token.** In the Cloudflare dashboard, create a token from the "Edit Cloudflare Workers" template, limited to that account and the getkestrel.dev zone, and add **Zone → DNS → Edit** for getkestrel.dev, which the template lacks and the Custom Domain needs (getkestrel.dev's own token has it). The template already covers Workers Scripts, Workers Routes and R2.
+3. **GitHub secrets.** In this repo's Settings → Environments, create (or open) `production`, add `CLOUDFLARE_API_TOKEN` (the token) and `CLOUDFLARE_ACCOUNT_ID`, and restrict its deployment branches to `main`.
+4. **Enable and deploy.** Set the repo variable `DEPLOY_ENABLED` to `true` (Settings → Secrets and variables → Actions → Variables), then run the Deploy workflow (Actions → Deploy → Run workflow). The first deploy creates the `kestrel-demo` Worker, and the Custom Domain creates the `demo.getkestrel.dev` DNS record and certificate in the getkestrel.dev zone. **Don't create a DNS record for demo.getkestrel.dev yourself:** a deploy from CI replaces an existing one without asking.
 5. **Session secret.** `npx wrangler secret put SESSION_SECRET --env production`, with a long random value (`openssl rand -base64 48`). Until it's set, the Worker answers every sandbox request with a 500 saying so. Changing it later signs every visitor out of their sandbox.
 6. **Check it.** `https://demo.getkestrel.dev/dashboard/` loads a seeded sandbox, a private window gets a separate one, and `curl -sI https://demo.getkestrel.dev/` shows `x-robots-tag: noindex`.
