@@ -96,10 +96,10 @@ index 8c5eb4a..c2a4611 100644
      },
      {
 diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
-index 8fb98d6..fa18fe9 100644
+index 8fb98d6..72d714f 100644
 --- a/src/auth/middleware.ts
 +++ b/src/auth/middleware.ts
-@@ -10,32 +10,22 @@
+@@ -10,32 +10,25 @@
  import type { AppEnv, Config } from "../env";
  import { json } from "../lib/errors";
  import type { Middleware, Principal } from "../router";
@@ -113,7 +113,10 @@ index 8fb98d6..fa18fe9 100644
 + * everything here. Access and the dev token are not consulted; `devMode` is untouched, so
 + * the `/api/dev/*` routes stay absent.
 + */
-+export const DEMO_PRINCIPAL: Principal = { kind: "human", email: "demo@getkestrel.dev" };
++export const DEMO_PRINCIPAL: Principal = Object.freeze({
++  kind: "human",
++  email: "demo@getkestrel.dev",
++});
  
  export async function authenticate(
 -  req: Request,

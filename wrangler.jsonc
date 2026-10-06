@@ -13,8 +13,14 @@
     // nothing here: wrangler's default CompiledWasm rule covers **/*.wasm.
     { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
     // The seed's demo images, as ArrayBuffers (vendor/demo-assets.ts).
-    { "type": "Data", "globs": ["**/*.webp", "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.gif"] }
+    {
+      "type": "Data",
+      "globs": ["**/*.webp", "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.gif"],
+      "fallthrough": true
+    }
   ],
+  // The port APP_ORIGIN names below, so the links Kestrel builds from it resolve locally.
+  "dev": { "port": 8788 },
   // Kestrel's built admin tree, from scripts/fetch-kestrel.mjs. Identical for every visitor.
   "assets": { "directory": "./vendor/kestrel/dist/public", "not_found_handling": "none" },
   // Clone, patch and build Kestrel at .kestrel-version; a no-op when vendor/ is current.

@@ -1,10 +1,14 @@
 // Kestrel's own default export, run by the wrapper on the sandbox env at the production
 // origin, with only the patch set changed: the seed loads on first use, the admin API
 // answers with no credentials (patches/0001-demo-auth.patch) while the dev routes stay
-// absent, and the public archive serves a seeded post with its image.
+// absent, and the public archive serves a seeded post with its image. vitest.config.ts binds
+// a dev secret, Access settings and a real provider to the Worker, none of which may reach
+// Kestrel.
 
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
+import { BUILD_INFO } from "kestrel";
 import { describe, expect, it } from "vitest";
+import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 
 const BASE = "https://demo.getkestrel.dev";
 
@@ -75,5 +79,54 @@ describe("Kestrel under the wrapper", () => {
       expect(image.headers.get("content-type")).toBe(type);
       expect((await image.arrayBuffer()).byteLength).toBeGreaterThan(1000);
     }
+  });
+
+  it("builds Kestrel's env from an allowlist, whatever the Worker is bound", async () => {
+    const worker = env as unknown as Record<string, unknown>;
+    expect(worker.DEV_AUTH_SECRET).toBeDefined(); // the leak this guards against is set up
+    expect(Object.keys(sandboxEnv(env)).sort()).toEqual(
+      [
+        "APP_ORIGIN",
+        "ARCHIVE_BASE_PATH",
+        "AWS_REGION",
+        "DB",
+        "FROM_ADDRESS",
+        "MEDIA",
+        "MIN_LEAD_SECONDS",
+        "PROVIDER",
+        "SENDING_DOMAIN",
+      ].sort(),
+    );
+    const { status, body } = await json<{
+      deployment: { provider: string; accessConfigured: boolean; authMode: string };
+    }>("/api/settings");
+    expect(status).toBe(200);
+    expect(body.deployment).toMatchObject({
+      provider: "fake",
+      accessConfigured: false,
+      authMode: "demo",
+    });
+  });
+
+  it("saves a same-origin draft edit, which persists", async () => {
+    const { body } = await json<{ posts: PostRow[] }>("/posts?status=draft");
+    const draft = body.posts[0];
+    expect(draft).toBeDefined();
+    const saved = await SELF.fetch(`${BASE}/posts/${draft?.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" },
+      body: JSON.stringify({ subject: "Edited in the sandbox" }),
+    });
+    expect(saved.status).toBe(200);
+    const reread = await json<{ posts: (PostRow & { subject: string })[] }>("/posts?status=draft");
+    expect(reread.body.posts.map((p) => p.subject)).toContain("Edited in the sandbox");
+  });
+
+  it("seeds once per Kestrel version, and again after a version change", async () => {
+    const senv = sandboxEnv(env);
+    expect(await ensureSeeded(senv, BUILD_INFO.tag)).toBe(false);
+    expect(await ensureSeeded(senv, "v0.0.0-older")).toBe(true);
+    expect(await ensureSeeded(senv, "v0.0.0-older")).toBe(false);
+    expect(await ensureSeeded(senv, BUILD_INFO.tag)).toBe(true);
   });
 });

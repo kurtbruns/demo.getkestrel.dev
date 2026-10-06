@@ -8,9 +8,10 @@ import { demoImages, demoLogo, getConfig, type KestrelEnv, seedDatabase } from "
 /**
  * The env Kestrel runs on. Built from an allowlist, never by spreading the Worker's env, so
  * nothing the deploy happens to bind (a `DEV_AUTH_SECRET`, Access settings, a `NOTIFY`
- * binding, a provider credential) can reach Kestrel. The transport is always the fake.
+ * binding, a provider or its credentials) can reach Kestrel. The transport is always the
+ * fake.
  */
-export function sandboxEnv(env: Env): KestrelEnv {
+export function sandboxEnv(env: Pick<Env, "DB" | "MEDIA" | "APP_ORIGIN">): KestrelEnv {
   return {
     DB: env.DB,
     MEDIA: env.MEDIA,
@@ -29,22 +30,25 @@ export function sandboxEnv(env: Env): KestrelEnv {
 const MARKER = "seeded_kestrel";
 
 /**
- * Load the "Field Notes" demo once per database, with Kestrel's own seed. The marker table
- * is the demo's, not Kestrel's: the seed's `resetAll` clears only Kestrel's tables, so the
- * marker survives it and records which Kestrel version seeded the database.
+ * Load the "Field Notes" demo with Kestrel's own seed, once per database and Kestrel
+ * version. The marker table is the demo's, not Kestrel's: the seed's `resetAll` clears only
+ * Kestrel's tables, so the marker survives it. A database seeded by another Kestrel version
+ * is seeded again, which resets it (DESIGN.md, "Updating the demo"). Returns whether it
+ * seeded.
  */
-export async function ensureSeeded(env: KestrelEnv, version: string): Promise<void> {
+export async function ensureSeeded(env: KestrelEnv, version: string): Promise<boolean> {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS demo_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT",
   ).run();
   const seeded = await env.DB.prepare("SELECT value FROM demo_meta WHERE key = ?")
     .bind(MARKER)
-    .first<{ value: string }>();
-  if (seeded) {
-    return;
+    .first<string>("value");
+  if (seeded === version) {
+    return false;
   }
   await seedDatabase(env, getConfig(env), demoImages, demoLogo);
   await env.DB.prepare("INSERT OR REPLACE INTO demo_meta (key, value) VALUES (?, ?)")
     .bind(MARKER, version)
     .run();
+  return true;
 }

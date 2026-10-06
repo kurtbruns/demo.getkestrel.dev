@@ -21,6 +21,15 @@ export default defineConfig(async () => {
             // The production origin, so the suite runs Kestrel exactly as deployed: not
             // dev-shaped, so its dev auth and /api/dev/* routes are off.
             APP_ORIGIN: "https://demo.getkestrel.dev",
+            // This spike shares one database, so it answers only local hosts; the suite
+            // is let through explicitly (src/index.ts, until #4).
+            SPIKE_SHARED_DB: "1",
+            // What a careless deploy might bind. The wrapper builds Kestrel's env from an
+            // allowlist, so none of these may reach it (test/spike.spec.ts).
+            DEV_AUTH_SECRET: "must-not-reach-kestrel",
+            ACCESS_TEAM_DOMAIN: "must-not-reach-kestrel.cloudflareaccess.com",
+            ACCESS_AUD: "must-not-reach-kestrel",
+            PROVIDER: "ses",
           },
         },
       }),

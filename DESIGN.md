@@ -122,7 +122,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### Seeding
 
-The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images are passed in as files. The build gathers them the way Kestrel's `scripts/seed.mjs` does (each image beside a post's `index.md`, named `<bundle>/<file>`, and the logo `publication.md` names) into the generated `vendor/demo-assets.ts`, which the Worker bundles through wrangler's `Data` rule. A release that adds or renames a demo image therefore needs no change here. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
+The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images are passed in as files. The build gathers every image beside a post's `index.md` (named `<bundle>/<file>`) and the logo `publication.md` names into the generated `vendor/demo-assets.ts`. That's a superset of what Kestrel's `scripts/seed.mjs` uploads, which is harmless because the seed looks each image up by the name its post uses. The Worker bundles that module, with the images as `ArrayBuffer`s through wrangler's `Data` rule, so a release that adds or renames a demo image needs no change here. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
 
 ### Auth
 
@@ -177,14 +177,13 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 | `PROVIDER` | `fake` | mail never leaves |
 | `APP_ORIGIN` | `https://demo.getkestrel.dev` | links, archive URLs, media URLs |
 | `ARCHIVE_BASE_PATH` | `/archive` | Kestrel default |
-| `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | the template's example values | required by `Env`, unused by the fake |
+| `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | `send.field-notes.example`, `Field Notes <newsletter@send.field-notes.example>`, `us-east-1` | required by `Env`, unused by the fake; `.example` can't route mail |
 | `MIN_LEAD_SECONDS` | `60` | a send fires within a visit |
 | `SUBREQUEST_BUDGET` | up to `1000` | sends finish in one tick |
 | `ACCESS_*`, `DEV_AUTH_SECRET`, `NOTIFY`, provider credentials | unset | see "Auth" and "Sends" |
 
 ## Open questions
 
-- **Deep imports.** The seed (`src/dev/seed.ts`) and `getConfig` are not part of Kestrel's default export. Importing them from a pinned tag is safe, but they're internal paths that can move between releases. Import them directly, or have a patch add one small re-export module so the wrapper's imports from Kestrel live in one place?
 - **Alarm cadence vs. cost.** Is "every minute only while a send is scheduled or in flight" enough to keep a demo send live, or should the alarm also run while the visitor is active?
 - **Uploads.** Enable capped per-session uploads at launch, or ship with uploads disabled?
 - **Landing.** Should `/` stay Kestrel's public landing page (the visitor's own sandbox), or redirect first-time visitors to `/dashboard/`? Kestrel's rule that no public page links into an admin path is about Access-gated deploys, but the demo banner can offer the way in either way.

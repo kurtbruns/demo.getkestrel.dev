@@ -129,11 +129,12 @@ const IMAGE_TYPES = {
 };
 
 /**
- * Write demo-assets.ts beside the tree: the images Kestrel's seed takes as files, the way
- * its own scripts/seed.mjs gathers them from demo/ (each image beside a post's index.md,
- * named `<bundle>/<file>`, and the logo publication.md names), as static imports the
- * Worker bundles (wrangler's Data rule makes each an ArrayBuffer). Generated, so a release
- * that adds or renames a demo image needs no change here.
+ * Write demo-assets.ts beside the tree: the images Kestrel's seed takes as files, as static
+ * imports the Worker bundles (wrangler's Data rule makes each an ArrayBuffer). Every image
+ * beside a post's index.md, named `<bundle>/<file>`, and the logo publication.md names. That
+ * is a superset of what Kestrel's scripts/seed.mjs uploads (only the images a post shows),
+ * which is harmless: the seed looks each image up by the name its post uses and ignores the
+ * rest. Generated, so a release that adds or renames a demo image needs no change here.
  */
 function writeDemoAssets() {
   const demo = join(DIR, "demo");
@@ -142,16 +143,21 @@ function writeDemoAssets() {
   const imports = [];
   const images = [];
   const postsDir = join(demo, "posts");
-  for (const bundle of readdirSync(postsDir, { withFileTypes: true })) {
+  const bundles = readdirSync(postsDir, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  for (const bundle of bundles) {
     if (!bundle.isDirectory()) {
       continue;
     }
     for (const file of readdirSync(join(postsDir, bundle.name)).sort()) {
       if (typeOf(file)) {
         const name = `image${images.length}`;
-        imports.push(`import ${name} from "${rel(join(postsDir, bundle.name, file))}";`);
+        imports.push(
+          `import ${name} from ${JSON.stringify(rel(join(postsDir, bundle.name, file)))};`,
+        );
         images.push(
-          `  { filename: "${bundle.name}/${file}", contentType: "${typeOf(file)}", bytes: ${name} },`,
+          `  { filename: ${JSON.stringify(`${bundle.name}/${file}`)}, contentType: ${JSON.stringify(typeOf(file))}, bytes: ${name} },`,
         );
       }
     }
@@ -160,8 +166,8 @@ function writeDemoAssets() {
   const logo = front?.[1].match(/^logo:\s*(.+?)\s*$/m)?.[1];
   let logoExport = "export const demoLogo = undefined;";
   if (logo && typeOf(logo) && existsSync(join(demo, logo))) {
-    imports.push(`import logo from "${rel(join(demo, logo))}";`);
-    logoExport = `export const demoLogo = { contentType: "${typeOf(logo)}", bytes: logo };`;
+    imports.push(`import logo from ${JSON.stringify(rel(join(demo, logo)))};`);
+    logoExport = `export const demoLogo = { contentType: ${JSON.stringify(typeOf(logo))}, bytes: logo };`;
   }
   writeFileSync(
     DEMO_ASSETS,
