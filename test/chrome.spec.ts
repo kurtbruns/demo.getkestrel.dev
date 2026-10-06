@@ -64,10 +64,10 @@ describe("the public pages", () => {
         .one(),
     );
     expect(frozen.rendered_html).not.toContain(BANNER);
-    const sent = fakeOutbox().filter((m) => (m as { subject?: string }).subject === subject);
+    const sent = fakeOutbox().filter((m) => m.subject === subject);
     expect(sent.length).toBeGreaterThan(0);
     for (const m of sent) {
-      expect((m as { html: string }).html).not.toContain(BANNER);
+      expect(m.html).not.toContain(BANNER);
     }
   });
 
