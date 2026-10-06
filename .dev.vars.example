@@ -1,0 +1,3 @@
+# Local secrets for `npm run dev`: copy to .dev.vars (gitignored). Deployed, set
+# SESSION_SECRET with `wrangler secret put SESSION_SECRET`, to a long random value.
+SESSION_SECRET=dev-only-insecure-session-secret

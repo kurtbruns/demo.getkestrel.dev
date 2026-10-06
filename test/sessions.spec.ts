@@ -1,0 +1,154 @@
+// Session routing (src/index.ts, src/session.ts): a cookie selects the visitor's own
+// sandbox Durable Object, which migrates and seeds itself once; new sessions are
+// rate-limited per IP; and paths that need no sandbox never start one.
+
+import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
+import { BASE, SAME_ORIGIN, visitor } from "./support";
+
+const SECRET = (env as unknown as { SESSION_SECRET: string }).SESSION_SECRET;
+
+interface PostList {
+  posts: { id: string; subject: string }[];
+  page: { total: number };
+}
+
+/** How many times a sandbox's database has been seeded (src/sandbox.ts). */
+async function seedCount(stub: DurableObjectStub): Promise<number> {
+  return runInDurableObject(stub, (_instance, state) => {
+    const row = state.storage.sql
+      .exec<{ value: string }>("SELECT value FROM demo_meta WHERE key = 'seed_count'")
+      .toArray()[0];
+    return Number(row?.value ?? 0);
+  });
+}
+
+describe("a first visit", () => {
+  it("gets a signed session cookie and a seeded sandbox", async () => {
+    const v = visitor();
+    const res = await v.fetch("/posts");
+    expect(res.status).toBe(200);
+    const set = res.headers.get("set-cookie") ?? "";
+    expect(set).toMatch(new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43}\\.[A-Za-z0-9_-]{43};`));
+    for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"]) {
+      expect(set).toContain(attr);
+    }
+    const body = (await res.json()) as PostList;
+    expect(body.page.total).toBeGreaterThanOrEqual(7);
+    expect(await seedCount(await v.sandbox())).toBe(1);
+  });
+
+  it("doesn't set a cookie on a later request with it", async () => {
+    const v = visitor();
+    await v.fetch("/posts");
+    const again = await v.fetch("/posts");
+    expect(again.status).toBe(200);
+    expect(again.headers.get("set-cookie")).toBeNull();
+  });
+});
+
+describe("a session", () => {
+  it("reaches the same sandbox every time, and only its own", async () => {
+    const a = visitor();
+    const b = visitor();
+    const created = await a.fetch("/posts", {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ subject: "Only in A's sandbox" }),
+    });
+    expect(created.status).toBe(201);
+    const listed = await a.json<PostList>("/posts?status=draft");
+    expect(listed.body.posts.map((p) => p.subject)).toContain("Only in A's sandbox");
+    const other = await b.json<PostList>("/posts?status=draft");
+    expect(other.body.posts.map((p) => p.subject)).not.toContain("Only in A's sandbox");
+  });
+
+  it("is seeded once, even under concurrent first requests", async () => {
+    const { token, value } = await mintSession(SECRET);
+    const cookie = `${SESSION_COOKIE}=${value}`;
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, () => SELF.fetch(`${BASE}/posts`, { headers: { cookie } })),
+    );
+    for (const res of responses) {
+      expect(res.status).toBe(200);
+      expect(res.headers.get("set-cookie")).toBeNull();
+      const body = (await res.json()) as PostList;
+      expect(body.page.total).toBeGreaterThanOrEqual(7);
+    }
+    const stub = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(SECRET, token)));
+    expect(await seedCount(stub)).toBe(1);
+  });
+
+  it("isn't honored when forged or tampered with: that's a new session", async () => {
+    const real = visitor();
+    await real.fetch("/posts");
+    const [name, value] = (real.cookie ?? "").split("=");
+    const [token, sig] = (value ?? "").split(".");
+    const tampered = `${name}=${token}.${sig?.startsWith("A") ? "B" : "A"}${sig?.slice(1)}`;
+    const forged = `${name}=${"a".repeat(43)}.${"b".repeat(43)}`;
+    for (const cookie of [tampered, forged, `${name}=garbage`]) {
+      const res = await SELF.fetch(`${BASE}/posts`, {
+        headers: { cookie, "cf-connecting-ip": "192.0.2.77" },
+      });
+      expect(res.status).toBe(200);
+      const set = res.headers.get("set-cookie") ?? "";
+      expect(set.startsWith(`${SESSION_COOKIE}=`)).toBe(true);
+      expect(set).not.toContain(token);
+    }
+  });
+});
+
+describe("the new-session rate limit", () => {
+  it("answers 429 past the per-IP limit, without a cookie or a sandbox", async () => {
+    const ip = "203.0.113.9";
+    const statuses: number[] = [];
+    let refused: Response | undefined;
+    for (let i = 0; i < 12; i++) {
+      const res = await SELF.fetch(`${BASE}/api/whoami`, { headers: { "cf-connecting-ip": ip } });
+      statuses.push(res.status);
+      if (res.status === 429) {
+        refused = res;
+      } else {
+        await res.arrayBuffer();
+      }
+    }
+    expect(statuses.slice(0, 10)).toEqual(Array(10).fill(200));
+    expect(statuses.slice(10)).toEqual([429, 429]);
+    expect(refused?.headers.get("set-cookie")).toBeNull();
+    expect(refused?.headers.get("content-type")).toContain("text/html");
+    expect(await refused?.text()).toContain("Too many new demos");
+  });
+
+  it("doesn't count a returning visitor", async () => {
+    const v = visitor("203.0.113.10");
+    await v.fetch("/posts");
+    for (let i = 0; i < 12; i++) {
+      expect((await v.fetch("/api/whoami")).status).toBe(200);
+    }
+  });
+});
+
+describe("paths that need no sandbox", () => {
+  it("never start a session", async () => {
+    // In production Workers assets serve /dashboard/ before the Worker runs. The test pool
+    // sends everything to the Worker, which answers an asset path it reaches with a 404 and
+    // no session; either way, no sandbox starts.
+    for (const path of [
+      "/robots.txt",
+      "/health",
+      "/dashboard/",
+      "/dashboard/missing.js",
+      "/favicon.svg",
+    ]) {
+      const res = await SELF.fetch(`${BASE}${path}`);
+      expect(res.status, path).toBe(
+        path.startsWith("/dashboard") || path === "/favicon.svg" ? 404 : 200,
+      );
+      expect(res.headers.get("set-cookie"), path).toBeNull();
+      await res.arrayBuffer();
+    }
+    const robots = await SELF.fetch(`${BASE}/robots.txt`);
+    expect(await robots.text()).toBe("User-agent: *\nDisallow: /\n");
+  });
+});

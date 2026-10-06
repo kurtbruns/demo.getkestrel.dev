@@ -41,14 +41,14 @@ The wrapper doesn't fork Kestrel's repo. It builds a pinned Kestrel release plus
 
 ### Request flow
 
-1. A request arrives at the demo Worker. Requests for Kestrel's static assets (`/dashboard/` and its CSS/JS, the favicon) are served from the Workers assets directory. They are the same bytes for every visitor and carry no data.
-2. For anything else, the Worker reads the session cookie. With no valid cookie it creates a new session (subject to the per-IP rate limit), sets the cookie, and continues. Crawlers are kept away by `robots.txt` and `noindex` so they don't mint sandboxes.
+1. A request arrives at the demo Worker. Requests for Kestrel's static assets (`/dashboard/` and its CSS/JS, the favicon) are served from the Workers assets directory before the Worker runs. They are the same bytes for every visitor and carry no data. An asset path that reaches the Worker anyway (a file that doesn't exist) gets a plain 404 and never a session, as do `/health` and `robots.txt`.
+2. For anything else, the Worker reads the session cookie. With no valid cookie it creates a new session, subject to the per-IP rate limit (see "Lifecycle"), and sets the cookie on the response. Crawlers are kept away by `robots.txt` (`Disallow: /`) and `noindex`, so they don't mint sandboxes.
 3. The Worker derives the Durable Object id from the session and forwards the request to that DO.
-4. On its first request the DO applies Kestrel's `migrations/` to its SQLite and runs the Field Notes seed. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response, adding `X-Robots-Tag: noindex`.
+4. On its first request after it starts, the DO applies any of Kestrel's `migrations/` it hasn't yet and seeds Field Notes if its database isn't seeded for this Kestrel version, all inside `blockConcurrencyWhile`, so concurrent first requests seed once and none sees a half-seeded database. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response, adding `X-Robots-Tag: noindex` (#7).
 
 ### Session identity
 
-The cookie carries a random 256-bit session token (`HttpOnly; Secure; SameSite=Lax`). The DO id is `idFromName(HMAC(SESSION_SECRET, token))`, so the only way to reach a sandbox is to hold its token, and a token can't be derived from a DO id, a URL, or anything Kestrel emits. Nothing in a URL ever selects a sandbox.
+The cookie (`kestrel_demo`) carries a random 256-bit session token and an HMAC of it, signed with the Worker secret `SESSION_SECRET` (`HttpOnly; Secure; SameSite=Lax; Path=/`, 30 days). The Worker honors only tokens it signed: a forged or tampered cookie counts as no cookie, so it goes through the new-session rate limit like any other first visit. The DO is named by a second, domain-separated HMAC of the token, `idFromName(HMAC(SESSION_SECRET, "sandbox:" + token))`. So the only way to reach a sandbox is to hold its cookie, and a token can't be derived from a DO id, a URL, or anything Kestrel emits. Nothing in a URL ever selects a sandbox (`src/session.ts`).
 
 ## The safety property
 
@@ -167,7 +167,7 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 
 - **Idle TTL.** Every request records `lastSeen`. The DO's alarm also checks the TTL (about 24h); past it, the DO deletes its R2 prefix and calls `ctx.storage.deleteAll()`. The next request with that cookie gets a fresh sandbox.
 - **Reset.** A "Reset demo" control posts to a wrapper route (outside Kestrel's `/api`) that wipes the DO's storage and the session's R2 prefix, then re-migrates and re-seeds.
-- **Rate limit.** Creating a session costs a migrate, a seed of several hundred statements, and some storage, so new sessions are rate-limited per IP with the Workers Rate Limiting binding. Requests that don't need a sandbox (static assets, `robots.txt`) never create one.
+- **Rate limit.** Creating a session costs a migrate, a seed of several hundred statements, and some storage, so new sessions are rate-limited per IP (`cf-connecting-ip`) with the Workers Rate Limiting binding `NEW_SESSIONS`: 10 a minute. Past it, the visitor gets a short 429 page asking them to wait a minute, with no cookie and no sandbox. A returning visitor's cookie skips the limit. Requests that don't need a sandbox (static assets, `robots.txt`, `/health`) never create one.
 
 ## Configuration of the sandbox env
 
