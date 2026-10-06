@@ -75,6 +75,10 @@ The demo's wrangler config has to carry what Kestrel's does for its code to bund
 
 A clone rather than a git dependency (`github:kurtbruns/kestrel#v1.2.0`), because npm installs a git dependency without its devDependencies (Kestrel's client build needs esbuild) and without `.git` (so the build stamp would read `dev` instead of the tag), and because a patch set needs a working tree to apply to. It mirrors how getkestrel.dev's CI clones Kestrel at `.kestrel-docs-version`.
 
+### The `kestrel` module
+
+The wrapper reaches Kestrel's code through one module specifier, `kestrel`. For bundling, wrangler (`alias` in `wrangler.jsonc`) and Vitest (`resolve.alias`) resolve it to `kestrel/entry.ts`, which re-exports from the patched tree: the default export, `getConfig`, `seedDatabase`, the build stamp, and the demo-image index the build writes to `vendor/demo-assets.ts`. For type-checking, `tsconfig.json` `paths` resolves it to `src/types/kestrel.d.ts` instead, a hand-written declaration of just that slice. This repo's `tsc` therefore never type-checks Kestrel's source, which would drag in Kestrel's own generated global `Env` and ambient `*.md` declarations. Kestrel's own typecheck, run on the patched tree, covers Kestrel. The two files must stay in step, and the Worker tests catch a mismatch at runtime.
+
 ### The patch set
 
 `patches/` holds a few small `git` patches against the pinned tag. The build applies them in filename order right after cloning (`git apply`), before anything is built. A patch that doesn't apply cleanly stops the build, so a Kestrel release that changes the patched lines fails loudly in the PR that bumps `.kestrel-version`, never quietly in production. CI applies them on every PR.
@@ -89,7 +93,7 @@ Planned patches:
 
 | Patch | What it changes | Issue |
 | --- | --- | --- |
-| demo auth | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request, and `whoami` reports `auth.mode: "demo"` | #2 |
+| `0001-demo-auth` | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request; `whoami` and the settings reflection report the auth mode as `demo`, and the client's types, curl snippet (no credential headers) and settings label accept it | #2 |
 | fake outbox bound | caps the fake transport's and the fake notifier's in-memory outboxes and the idempotency map | #6 |
 | demo chrome | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
 
@@ -118,7 +122,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### Seeding
 
-The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images (`demo/posts/*/*.webp`, `demo/field-notes-logo.png`) are passed in as files, which the wrapper bundles from the pinned checkout. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
+The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images are passed in as files. The build gathers every image beside a post's `index.md` (named `<bundle>/<file>`) and the logo `publication.md` names into the generated `vendor/demo-assets.ts`. That's a superset of what Kestrel's `scripts/seed.mjs` uploads, which is harmless because the seed looks each image up by the name its post uses. The Worker bundles that module, with the images as `ArrayBuffer`s through wrangler's `Data` rule, so a release that adds or renames a demo image needs no change here. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
 
 ### Auth
 
@@ -173,14 +177,13 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 | `PROVIDER` | `fake` | mail never leaves |
 | `APP_ORIGIN` | `https://demo.getkestrel.dev` | links, archive URLs, media URLs |
 | `ARCHIVE_BASE_PATH` | `/archive` | Kestrel default |
-| `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | the template's example values | required by `Env`, unused by the fake |
+| `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | `send.field-notes.example`, `Field Notes <newsletter@send.field-notes.example>`, `us-east-1` | required by `Env`, unused by the fake; `.example` can't route mail |
 | `MIN_LEAD_SECONDS` | `60` | a send fires within a visit |
 | `SUBREQUEST_BUDGET` | up to `1000` | sends finish in one tick |
 | `ACCESS_*`, `DEV_AUTH_SECRET`, `NOTIFY`, provider credentials | unset | see "Auth" and "Sends" |
 
 ## Open questions
 
-- **Deep imports.** The seed (`src/dev/seed.ts`) and `getConfig` are not part of Kestrel's default export. Importing them from a pinned tag is safe, but they're internal paths that can move between releases. Import them directly, or have a patch add one small re-export module so the wrapper's imports from Kestrel live in one place?
 - **Alarm cadence vs. cost.** Is "every minute only while a send is scheduled or in flight" enough to keep a demo send live, or should the alarm also run while the visitor is active?
 - **Uploads.** Enable capped per-session uploads at launch, or ship with uploads disabled?
 - **Landing.** Should `/` stay Kestrel's public landing page (the visitor's own sandbox), or redirect first-time visitors to `/dashboard/`? Kestrel's rule that no public page links into an admin path is about Access-gated deploys, but the demo banner can offer the way in either way.
