@@ -1,15 +1,23 @@
 /**
  * One visitor's sandbox: a SQLite-backed Durable Object whose storage is that visitor's
  * Kestrel database, through the D1 adapter (DESIGN.md, "Architecture"). The Worker routes
- * every request the visitor makes here, by their session cookie (src/session.ts).
+ * every request the visitor makes here, by their session cookie (src/session.ts), and the
+ * DO's alarm runs Kestrel's send sweep for this sandbox alone (DESIGN.md, "Sends").
  */
 
 import { DurableObject } from "cloudflare:workers";
 import kestrel, { BUILD_INFO, type KestrelEnv, migrations } from "kestrel";
 import { DurableObjectD1 } from "./d1/adapter";
 import { migrate } from "./d1/migrate";
+import { blockEgress, egress } from "./egress";
 import { MAX_OBJECT_BYTES, SandboxMedia } from "./media";
-import { ensureSeeded, sandboxEnv } from "./sandbox";
+import { checkSandboxConfig, ensureSeeded, sandboxEnv } from "./sandbox";
+
+// Before any of Kestrel's code runs in this isolate.
+blockEgress();
+
+/** Kestrel's sweep runs once a minute; a send in flight is swept again a tick later. */
+const SWEEP_TICK_MS = 60_000;
 
 /** Uploads Kestrel takes (src/app.ts at the pinned tag). */
 function isUpload(request: Request, path: string): boolean {
@@ -51,6 +59,7 @@ export class SandboxDO extends DurableObject<Env> {
   private start(): Promise<void> {
     this.starting ??= this.ctx
       .blockConcurrencyWhile(async () => {
+        checkSandboxConfig(this.kenv);
         migrate(this.ctx.storage, migrations);
         // A re-seed first clears the sandbox's own uploads, which Kestrel's resetAll can't.
         await ensureSeeded(this.seedEnv, BUILD_INFO.tag, () => this.media.clear());
@@ -64,6 +73,81 @@ export class SandboxDO extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     await this.start();
+    try {
+      return await this.handle(request);
+    } finally {
+      // Any request may have scheduled, moved or canceled a send.
+      await this.scheduleSweep();
+    }
+  }
+
+  /** Run Kestrel's send sweep for this sandbox, then arm the next one if it's needed. */
+  async alarm(): Promise<void> {
+    await this.start();
+    try {
+      await this.sweep();
+    } finally {
+      await this.scheduleSweep();
+    }
+  }
+
+  /** Requests refused by the egress block in this isolate (src/egress.ts), for the tests. */
+  egressRefused(): number {
+    return egress.refused;
+  }
+
+  /** Kestrel's own scheduled handler, as its once-a-minute Cron Trigger would call it. */
+  private async sweep(): Promise<void> {
+    const pending: Promise<unknown>[] = [];
+    const controller = {
+      cron: "* * * * *",
+      scheduledTime: Date.now(),
+      noRetry: () => {},
+    } as ScheduledController;
+    await kestrel.scheduled(controller, this.kenv, {
+      waitUntil: (promise: Promise<unknown>) => {
+        pending.push(promise);
+      },
+      passThroughOnException: () => {},
+      props: {},
+    } as ExecutionContext);
+    // The sweep runs under waitUntil; the alarm is done when it is.
+    await Promise.all(pending);
+  }
+
+  /**
+   * Arm the alarm for when Kestrel's sweep next has work: a tick from now while a send is in
+   * flight, else the earliest scheduled send's fire time; clear it when there is none. Reads
+   * Kestrel's `sends` table directly (read-only). A sandbox with nothing to send never wakes.
+   */
+  private async scheduleSweep(): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    const now = Date.now();
+    const sending = sql
+      .exec<{ n: number }>("SELECT count(*) AS n FROM sends WHERE status = 'sending'")
+      .one().n;
+    const firstDue = sql
+      .exec<{ at: number | null }>(
+        "SELECT min(fire_at) AS at FROM sends WHERE status = 'scheduled'",
+      )
+      .one().at;
+    let next: number | null = null;
+    if (sending > 0) {
+      next = now + SWEEP_TICK_MS;
+    } else if (firstDue !== null) {
+      next = Math.max(firstDue, now + 1000);
+    }
+    const current = await this.ctx.storage.getAlarm();
+    if (next === null) {
+      if (current !== null) {
+        await this.ctx.storage.deleteAlarm();
+      }
+    } else if (current !== next) {
+      await this.ctx.storage.setAlarm(next);
+    }
+  }
+
+  private async handle(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (isUpload(request, path)) {
       const declared = Number(request.headers.get("content-length") ?? Number.NaN);

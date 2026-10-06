@@ -98,7 +98,7 @@ Planned patches:
 | Patch | What it changes | Issue |
 | --- | --- | --- |
 | `0001-demo-auth` | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request; `whoami` and the settings reflection report the auth mode as `demo`, and the client's types, curl snippet (no credential headers) and settings label accept it | #2 |
-| fake outbox bound | caps the fake transport's and the fake notifier's in-memory outboxes and the idempotency map | #6 |
+| `0002-fake-outbox-bound` | keeps only the newest 500 messages in the fake transport's and the fake notifier's in-memory outboxes, and the newest 5,000 keys in the fake transport's idempotency map (far above one batch, so a retried batch is still deduped) | #6 |
 | demo chrome | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
 
 Why a patch set, over the two alternatives considered:
@@ -154,10 +154,10 @@ Kestrel serves `/dashboard/` from Workers static assets (`assets.directory: ./di
 
 ## Sends
 
-- `PROVIDER=fake` is fixed in the sandbox env, and the wrapper refuses to start if anything else is configured. No `NOTIFY` binding is declared, so publisher notifications go through the fake provider too (`notifyChannel` resolves to `provider`).
-- The send sweep runs from the DO's alarm, which calls Kestrel's `scheduled()` with a `ScheduledController`-shaped `{ cron: "* * * * *", scheduledTime, noRetry }` and the DO's own `ctx` for `waitUntil`. The alarm is armed once a minute while the sandbox has a scheduled or in-flight send and stays idle otherwise. There is no Cron Trigger, so no single tick has to sweep every sandbox.
-- `MIN_LEAD_SECONDS=60` (Kestrel's floor) keeps a demo send watchable within a visit. `SUBREQUEST_BUDGET` can go up to Kestrel's 1,000-statement cap, since the adapter's statements are local SQLite calls rather than D1 subrequests.
-- No egress: inside the DO, `globalThis.fetch` is replaced with a function that throws, so even a code path Kestrel only takes with a real provider, the SNS signing-cert fetch, or Access's JWKS can't reach the network. A test proves a send completes with outbound fetch refused.
+- **The fake transport only.** `sandboxEnv` fixes `PROVIDER=fake` and declares no `NOTIFY` binding, so publisher notifications go through the fake provider too (`notifyChannel` resolves to `provider` deployed, `fake` on a loopback dev origin). As a second check, the DO resolves Kestrel's own config before migrating and refuses to run unless the provider is `fake` and notifications aren't Cloudflare's email (`checkSandboxConfig`).
+- **The alarm drives the sweep.** The DO's alarm calls Kestrel's own `scheduled()` with a `ScheduledController`-shaped `{ cron: "* * * * *", scheduledTime, noRetry }`, collects its `waitUntil` work, and awaits it. After every request and every sweep, the DO re-arms the alarm for when the sweep next has work: a minute from now while a send is `sending`, otherwise the earliest scheduled send's `fire_at`. With nothing scheduled, it clears the alarm. A sandbox with nothing to send never wakes, and a freshly seeded one wakes only for the seed's scheduled send two days out. There is no Cron Trigger, so no single tick sweeps every sandbox. The DO reads Kestrel's `sends` table directly (read-only) to decide this.
+- **Fast enough to watch.** `MIN_LEAD_SECONDS=60` (Kestrel's floor) keeps a demo send watchable within a visit. `SUBREQUEST_BUDGET=1000` (Kestrel's cap) lets a send finish in one tick, since the adapter's statements are local SQLite calls, not D1 subrequests.
+- **No egress.** The sandbox module replaces `globalThis.fetch` with one that refuses every request (`src/egress.ts`) before any of Kestrel's code runs. Every outbound call Kestrel can make goes through it: Resend's API, SES through aws4fetch, SNS signing certificates and subscription URLs, Access's JWKS. In the sandbox none of those paths is even reachable, since the webhook routes delegate to the active provider, always the fake. So the block is a backstop, and the tests show a full send completing with nothing refused, and a refused fetch counted. It's isolate-wide, which is fine: the Worker reaches its sandboxes and R2 through bindings, never the global fetch.
 
 ### Module-level state in Kestrel
 
@@ -168,7 +168,7 @@ DOs of one class can share an isolate, so anything Kestrel keeps at module scope
 - `providers/simulate.ts`: the simulation's maps (inert here, since the simulation only engages when dev-shaped).
 - `index.ts`'s router cache and `auth/access.ts`'s JWKS cache, which hold config, not visitor data.
 
-None of this is reachable over HTTP outside dev mode (the outbox is read only by `/api/dev/outbox`), so it is not a cross-sandbox read, but the outboxes are an unbounded memory leak. The fake transport's idempotency map also ignores which sandbox a key came from, though keys embed per-sandbox send ids, so they can't collide. The fake-outbox-bound patch caps the two outboxes and the idempotency map at a fixed size, keeping the newest entries. (Briefly filed upstream as kurtbruns/kestrel#470 and closed: only the demo runs the fake transport in a long-lived production isolate.)
+None of this is reachable over HTTP outside dev mode (the outbox is read only by `/api/dev/outbox`), so it is not a cross-sandbox read, but the outboxes are an unbounded memory leak. The fake transport's idempotency map also ignores which sandbox a key came from, though keys embed per-sandbox send ids, so they can't collide. The `0002-fake-outbox-bound` patch caps the two outboxes and the idempotency map at a fixed size, keeping the newest entries. (Briefly filed upstream as kurtbruns/kestrel#470 and closed: only the demo runs the fake transport in a long-lived production isolate.)
 
 ## Lifecycle
 
