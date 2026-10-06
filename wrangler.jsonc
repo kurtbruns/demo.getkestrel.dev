@@ -6,11 +6,35 @@
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
-  // Kestrel imports its demo posts and setup docs as text. Its css-inline .wasm import needs
-  // nothing here: wrangler's default CompiledWasm rule covers **/*.wasm.
-  "rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
+  // The `kestrel` module: Kestrel's code at the pinned, patched tag (kestrel/entry.ts).
+  "alias": { "kestrel": "./kestrel/entry.ts" },
+  "rules": [
+    // Kestrel imports its demo posts and setup docs as text. Its css-inline .wasm import needs
+    // nothing here: wrangler's default CompiledWasm rule covers **/*.wasm.
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+    // The seed's demo images, as ArrayBuffers (vendor/demo-assets.ts).
+    { "type": "Data", "globs": ["**/*.webp", "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.gif"] }
+  ],
   // Kestrel's built admin tree, from scripts/fetch-kestrel.mjs. Identical for every visitor.
   "assets": { "directory": "./vendor/kestrel/dist/public", "not_found_handling": "none" },
   // Clone, patch and build Kestrel at .kestrel-version; a no-op when vendor/ is current.
-  "build": { "command": "node scripts/fetch-kestrel.mjs", "watch_dir": ["./src", "./patches"] }
+  "build": {
+    "command": "node scripts/fetch-kestrel.mjs",
+    "watch_dir": ["./src", "./kestrel", "./patches"]
+  },
+  // Local development only, until #4 moves each visitor into a Durable Object. Kestrel's
+  // schema comes from its own migrations (npm run migrate:local).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kestrel-demo-dev",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "vendor/kestrel/migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "kestrel-demo-media-dev" }],
+  "vars": {
+    // The origin Kestrel's links use. Production sets https://demo.getkestrel.dev (#10).
+    "APP_ORIGIN": "http://localhost:8788"
+  }
 }

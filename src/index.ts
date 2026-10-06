@@ -1,13 +1,18 @@
 /**
- * The demo Worker. For now only a liveness probe that names the Kestrel build it carries,
- * which also proves the wrapper can import from the pinned, patched tree in vendor/kestrel.
- * Kestrel's admin tree is served from static assets before this runs (wrangler.jsonc).
+ * The demo Worker: Kestrel at the pinned, patched release (see DESIGN.md), run on the
+ * sandbox env from sandbox.ts. Kestrel's admin tree is served from static assets before
+ * this runs (wrangler.jsonc). For now every visitor shares the Worker's own D1 and R2;
+ * #4 gives each visitor a Durable Object of their own.
  */
 
-import { BUILD_INFO } from "../vendor/kestrel/src/generated/version";
+import kestrel, { BUILD_INFO } from "kestrel";
+import { ensureSeeded, sandboxEnv } from "./sandbox";
+
+// One seed check per isolate, shared by concurrent first requests.
+let seeding: Promise<void> | undefined;
 
 export default {
-  fetch(request): Response {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
       return Response.json({
@@ -16,6 +21,12 @@ export default {
         kestrel: { version: BUILD_INFO.version, tag: BUILD_INFO.tag, sha: BUILD_INFO.sha },
       });
     }
-    return new Response("Not found", { status: 404 });
+    const senv = sandboxEnv(env);
+    seeding ??= ensureSeeded(senv, BUILD_INFO.tag).catch((err: unknown) => {
+      seeding = undefined; // let the next request retry
+      throw err;
+    });
+    await seeding;
+    return kestrel.fetch(request, senv, ctx);
   },
 } satisfies ExportedHandler<Env>;

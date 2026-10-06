@@ -1,0 +1,159 @@
+Demo auth (kurtbruns/demo.getkestrel.dev#2)
+
+What: `authenticate` (src/auth/middleware.ts) returns a fixed human principal,
+demo@getkestrel.dev, for every request, without consulting Access or the dev token.
+`GET /api/whoami` and the settings reflection report `auth.mode` / `authMode` as "demo",
+and the client's auth-mode types, curl snippet (no credential headers) and settings label
+accept it.
+
+Why: at a non-loopback APP_ORIGIN, Kestrel's dev auth is structurally off and Access is
+the only door, so the editor would answer 401. In the demo, a request only reaches this
+Kestrel through its owner's session cookie, which the demo Worker maps to that visitor's
+own Durable Object, so whoever holds the cookie is that sandbox's publisher. Nothing else
+in the gate changes: devMode still comes only from getConfig, so the /api/dev/* routes
+stay absent; admin writes still refuse cross-site requests; admin responses stay no-store.
+
+See DESIGN.md, "Auth" and "The patch set".
+
+diff --git a/client/room/curl.ts b/client/room/curl.ts
+index c013081..37975eb 100644
+--- a/client/room/curl.ts
++++ b/client/room/curl.ts
+@@ -4,13 +4,17 @@
+ import type { ReferenceEntry } from "../../shared/reference";
+ 
+ /** How this instance authenticates the admin tier, as the boot probe reported it. */
+-export type AuthMode = "access" | "dev";
++export type AuthMode = "access" | "dev" | "demo";
+ 
+ /**
+  * The credential headers an admin call carries: the Access service token's pair once
+  * deployed (the names the setup guide uses), or the dev token locally (as in the README).
+  */
+ function authLines(mode: AuthMode): string[] {
++  // The demo sandbox has no credential to show: its session cookie is the browser's own.
++  if (mode === "demo") {
++    return [];
++  }
+   return mode === "access"
+     ? [
+         '-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"',
+diff --git a/client/settings/settings.ts b/client/settings/settings.ts
+index 2940489..e912ccf 100644
+--- a/client/settings/settings.ts
++++ b/client/settings/settings.ts
+@@ -432,7 +432,7 @@ export async function renderSettings(root: HTMLElement, signal: AbortSignal): Pr
+           <div class="set-kv-k">App origin</div><div class="set-kv-v"><span class="mono">${d.appOrigin}</span></div>
+           <div class="set-kv-k">Archive URL base</div><div class="set-kv-v"><span class="mono">${archiveBase}</span>${archiveIsDefault ? html`<span class="set-pill">default: app origin</span>` : null}</div>
+           <div class="set-kv-k">Image URL base</div><div class="set-kv-v"><span class="mono">${d.mediaPublicBase}</span></div>
+-          <div class="set-kv-k">Auth mode</div><div class="set-kv-v">${d.authMode === "access" ? "Cloudflare Access" : "Local dev token"}</div>
++          <div class="set-kv-k">Auth mode</div><div class="set-kv-v">${d.authMode === "access" ? "Cloudflare Access" : d.authMode === "demo" ? "Demo sandbox (no sign-in)" : "Local dev token"}</div>
+           <div class="set-kv-k">Cloudflare Access</div><div class="set-kv-v">${d.accessConfigured ? html`<span class="set-pill ok">${icon("check")}Configured</span>` : html`<span class="set-pill">Not configured</span>`}</div>
+           <div class="set-kv-k">Minimum lead</div><div class="set-kv-v">${formatLead(d.minLeadMs)}${d.minLeadMs === DEFAULT_MIN_LEAD_MS ? html`<span class="set-pill">default</span>` : null}</div>
+         </div>
+diff --git a/client/state.ts b/client/state.ts
+index b561c0b..776f361 100644
+--- a/client/state.ts
++++ b/client/state.ts
+@@ -7,7 +7,7 @@ import type { SettingsResponse } from "../shared/settings";
+ /** The boot probe's answer (GET /api/whoami): who we are and which auth mode gates this surface. */
+ export interface Session {
+   principal: { kind: "human" | "service"; email?: string };
+-  auth: { mode: "access" | "dev" };
++  auth: { mode: "access" | "dev" | "demo" };
+ }
+ 
+ export interface AppState {
+diff --git a/shared/settings.ts b/shared/settings.ts
+index 3fcedd0..ebec987 100644
+--- a/shared/settings.ts
++++ b/shared/settings.ts
+@@ -76,7 +76,7 @@ export interface DeploymentView {
+   mediaPublicBase: string;
+   awsRegion: string;
+   accessConfigured: boolean;
+-  authMode: "access" | "dev";
++  authMode: "access" | "dev" | "demo";
+   build: BuildInfo;
+   /** How notifications reach the publisher: Cloudflare's own email, the newsletter's provider, or the dev fake that delivers nothing. */
+   notifyChannel: "cloudflare" | "provider" | "fake";
+diff --git a/src/app.ts b/src/app.ts
+index 8c5eb4a..c2a4611 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -170,11 +170,11 @@ export function createRouter({
+       path: "/api/whoami",
+       access: "admin",
+       resource: "system",
+-      summary: "The authenticated principal and the auth mode (access or dev).",
++      summary: "The authenticated principal and the auth mode (demo, in the demo sandbox).",
+       handler: (c) =>
+         json({
+           principal: c.principal,
+-          auth: { mode: c.config.accessTeamDomain ? "access" : "dev" },
++          auth: { mode: "demo" },
+         }),
+     },
+     {
+diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
+index 8fb98d6..fa18fe9 100644
+--- a/src/auth/middleware.ts
++++ b/src/auth/middleware.ts
+@@ -10,32 +10,22 @@
+ import type { AppEnv, Config } from "../env";
+ import { json } from "../lib/errors";
+ import type { Middleware, Principal } from "../router";
+-import { ACCESS_JWT_HEADER, verifyAccessJwt } from "./access";
+-import { verifyDevToken } from "./dev_token";
++
++/**
++ * Demo sandbox (patched by demo.getkestrel.dev): every request is the sandbox's publisher.
++ * A request only reaches this Kestrel through its owner's session cookie, which the demo
++ * Worker maps to that visitor's own Durable Object, so whoever holds the cookie owns
++ * everything here. Access and the dev token are not consulted; `devMode` is untouched, so
++ * the `/api/dev/*` routes stay absent.
++ */
++export const DEMO_PRINCIPAL: Principal = { kind: "human", email: "demo@getkestrel.dev" };
+ 
+ export async function authenticate(
+-  req: Request,
++  _req: Request,
+   _env: AppEnv,
+-  config: Config,
++  _config: Config,
+ ): Promise<Principal | null> {
+-  const jwt = req.headers.get(ACCESS_JWT_HEADER);
+-  if (jwt) {
+-    const p = await verifyAccessJwt(jwt, config);
+-    if (p) {
+-      return p;
+-    }
+-  }
+-  // Local dev only: a dev-signed token carried as a bearer. `devAuthSecret` is
+-  // resolved only in a dev-shaped env AND is never committed (it lives in the
+-  // gitignored `.dev.vars`), so a deployed Worker has no secret and this path is
+-  // inert — Access is then the only door.
+-  if (config.devAuthSecret) {
+-    const auth = req.headers.get("Authorization");
+-    if (auth?.startsWith("Bearer ")) {
+-      return verifyDevToken(auth.slice("Bearer ".length), config.devAuthSecret);
+-    }
+-  }
+-  return null;
++  return DEMO_PRINCIPAL;
+ }
+ 
+ /** Route middleware: require a valid principal or 401. */
+diff --git a/src/routes/settings.ts b/src/routes/settings.ts
+index c838230..a4e454f 100644
+--- a/src/routes/settings.ts
++++ b/src/routes/settings.ts
+@@ -79,7 +79,7 @@ function deploymentView(cfg: Config): DeploymentView {
+     awsRegion: cfg.awsRegion,
+     // Booleans only — never the values.
+     accessConfigured: Boolean(cfg.accessTeamDomain && cfg.accessAud),
+-    authMode: cfg.accessTeamDomain ? "access" : "dev",
++    authMode: "demo",
+     // The running build (SPEC §9), so the editor can show/link it. Build metadata,
+     // resolved at build (src/build.ts) — not deploy config, and never a secret.
+     build: buildInfo(),

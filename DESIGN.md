@@ -75,6 +75,10 @@ The demo's wrangler config has to carry what Kestrel's does for its code to bund
 
 A clone rather than a git dependency (`github:kurtbruns/kestrel#v1.2.0`), because npm installs a git dependency without its devDependencies (Kestrel's client build needs esbuild) and without `.git` (so the build stamp would read `dev` instead of the tag), and because a patch set needs a working tree to apply to. It mirrors how getkestrel.dev's CI clones Kestrel at `.kestrel-docs-version`.
 
+### The `kestrel` module
+
+The wrapper reaches Kestrel's code through one module specifier, `kestrel`. For bundling, wrangler (`alias` in `wrangler.jsonc`) and Vitest (`resolve.alias`) resolve it to `kestrel/entry.ts`, which re-exports from the patched tree: the default export, `getConfig`, `seedDatabase`, the build stamp, and the demo-image index the build writes to `vendor/demo-assets.ts`. For type-checking, `tsconfig.json` `paths` resolves it to `src/types/kestrel.d.ts` instead, a hand-written declaration of just that slice. This repo's `tsc` therefore never type-checks Kestrel's source, which would drag in Kestrel's own generated global `Env` and ambient `*.md` declarations. Kestrel's own typecheck, run on the patched tree, covers Kestrel. The two files must stay in step, and the Worker tests catch a mismatch at runtime.
+
 ### The patch set
 
 `patches/` holds a few small `git` patches against the pinned tag. The build applies them in filename order right after cloning (`git apply`), before anything is built. A patch that doesn't apply cleanly stops the build, so a Kestrel release that changes the patched lines fails loudly in the PR that bumps `.kestrel-version`, never quietly in production. CI applies them on every PR.
@@ -89,7 +93,7 @@ Planned patches:
 
 | Patch | What it changes | Issue |
 | --- | --- | --- |
-| demo auth | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request, and `whoami` reports `auth.mode: "demo"` | #2 |
+| `0001-demo-auth` | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request; `whoami` and the settings reflection report the auth mode as `demo`, and the client's types, curl snippet (no credential headers) and settings label accept it | #2 |
 | fake outbox bound | caps the fake transport's and the fake notifier's in-memory outboxes and the idempotency map | #6 |
 | demo chrome | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
 
@@ -118,7 +122,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### Seeding
 
-The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images (`demo/posts/*/*.webp`, `demo/field-notes-logo.png`) are passed in as files, which the wrapper bundles from the pinned checkout. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
+The seed is Kestrel's own: `seedDatabase(env, config, images, logo)` in `src/dev/seed.ts`, the function behind `POST /api/dev/seed`. Its posts and publication file are imported as text from `demo/`, and its images are passed in as files. The build gathers them the way Kestrel's `scripts/seed.mjs` does (each image beside a post's `index.md`, named `<bundle>/<file>`, and the logo `publication.md` names) into the generated `vendor/demo-assets.ts`, which the Worker bundles through wrangler's `Data` rule. A release that adds or renames a demo image therefore needs no change here. The wrapper calls it directly inside the DO rather than through the dev route, which a deployed config never registers. The seed writes post images and the logo to `env.MEDIA` under deterministic keys, which is what lets the media wrapper share one read-only copy (see "Media").
 
 ### Auth
 

@@ -10,11 +10,14 @@ Needs Node 22 or later and git.
 
 ```bash
 npm ci
-npm run build    # clone Kestrel at .kestrel-version into vendor/, apply patches/, build it
-npm run dev      # wrangler dev (rebuilds vendor/ only when the pin or a patch changed)
-npm run check    # wrangler types, tsc, Biome
-npm test         # the build script's patch-mechanism tests
+npm run build          # clone Kestrel at .kestrel-version into vendor/, apply patches/, build it
+npm run migrate:local  # apply Kestrel's migrations to the local D1 (once, and after a Kestrel bump)
+npm run dev            # wrangler dev on http://localhost:8788; the editor is at /dashboard/
+npm run check          # wrangler types, tsc, Biome
+npm test               # the Worker suite (Vitest in workerd), then the build script's tests
 ```
+
+The first request seeds the "Field Notes" demo publication with Kestrel's own seed.
 
 `npm run build -- --force` rebuilds `vendor/` from scratch. `patches/README.md` explains how to write a patch.
 
