@@ -1,0 +1,265 @@
+Demo chrome (kurtbruns/demo.getkestrel.dev#9)
+
+What: in the demo's auth mode ("demo", from 0001-demo-auth), the editor's identity chip
+reads "Demo sandbox" with no sign-out link, and a strip above the workspace says the
+sandbox is private and temporary, with "Reset demo" (a link to the demo Worker's own
+confirmation page, /_demo/reset) and a link to getkestrel.dev. The strip's height is
+published as --demo-h, which the full-height layout and the sticky sidebar subtract; on a
+phone it clears the fixed menu button. Every public page (card pages, the reader shell, a
+hosted post page) gets a matching strip pinned to the bottom, with "Open the editor" and
+"Reset demo". A client spec covers the editor side.
+
+Why: a visitor should always know they're in a disposable sandbox, and how to start over.
+The public strip rides the dev badge's injection points (devDashboardStyle and
+devDashboardBadge in src/lib/page.ts), which reach only pages as served, never a frozen
+render or a sent email (I3); in this build those helpers always emit the strip, so a
+future caller elsewhere would carry it too. Reset is a link, not a form, because a post
+page forbids form posts (form-action 'none') and every public page forbids script.
+
+SPEC §11 says no public page links into the Access-gated admin; its one exception is the
+dev-only shortcut. The strip's "Open the editor" link departs from that on purpose: in
+the demo the editor has no Access wall (0001-demo-auth), and each visitor's editor is
+their own sandbox, so the reason for the rule doesn't hold. No I-invariant is touched.
+
+Kestrel's own server specs that assert the dev badge's absence (test/archive.spec.ts)
+fail on the patched tree, as its auth specs do under 0001; its client specs pass.
+
+See DESIGN.md, "Static assets and demo chrome" and "The patch set".
+
+diff --git a/client/auth.ts b/client/auth.ts
+index 6e317ec..cc4d509 100644
+--- a/client/auth.ts
++++ b/client/auth.ts
+@@ -37,7 +37,14 @@ export function authHeaders(): Record<string, string> {
+  */
+ export function renderIdentity(): void {
+   const session = appState.session;
+-  if (session?.auth.mode === "access") {
++  if (session?.auth.mode === "demo") {
++    // Demo sandbox (patched by demo.getkestrel.dev): no sign-in, and no sign-out.
++    setHtml(
++      identity,
++      html`<span class="who demo" title="A private demo sandbox: no sign-in needed">Demo sandbox</span>`,
++    );
++    renderDemoBanner();
++  } else if (session?.auth.mode === "access") {
+     const p = session.principal;
+     const who = p.email || (p.kind === "service" ? "Service token" : "Signed in");
+     setHtml(
+@@ -52,6 +59,34 @@ export function renderIdentity(): void {
+   }
+ }
+ 
++/**
++ * Demo sandbox (patched by demo.getkestrel.dev): a strip above the workspace saying the
++ * sandbox is private and temporary, with the reset. Rendered once, outside the routed
++ * view, so navigating never clears it. "Reset demo" links to the demo Worker's own
++ * confirmation page, whose button resets and comes back here. The strip's height is kept
++ * in --demo-h, so the full-height layout and the sticky sidebar make room for it.
++ */
++function renderDemoBanner(): void {
++  if (document.getElementById("demoBanner")) {
++    return;
++  }
++  const banner = document.createElement("div");
++  banner.id = "demoBanner";
++  banner.className = "demo-banner";
++  banner.setAttribute("role", "note");
++  setHtml(
++    banner,
++    html`<span><strong>Demo sandbox.</strong> Your changes are private to this browser and are deleted after a day away. Nothing you send leaves the sandbox.</span><a class="demo-reset" href="/_demo/reset">Reset demo</a><a href="https://getkestrel.dev">About Kestrel</a>`,
++  );
++  (document.querySelector(".layout") ?? app).before(banner);
++  const publishHeight = () =>
++    document.documentElement.style.setProperty("--demo-h", `${banner.offsetHeight}px`);
++  publishHeight();
++  if (typeof ResizeObserver !== "undefined") {
++    new ResizeObserver(publishHeight).observe(banner);
++  }
++}
++
+ /**
+  * Access sessions expire at the edge (the request never reaches the app), so the only
+  * recovery is a fresh document load that re-triggers the Access login. In dev this
+diff --git a/client/demo.spec.ts b/client/demo.spec.ts
+new file mode 100644
+index 0000000..4de2ec9
+--- /dev/null
++++ b/client/demo.spec.ts
+@@ -0,0 +1,49 @@
++// Demo sandbox (patched by demo.getkestrel.dev): in the demo's auth mode, the identity
++// chip names the sandbox and the strip above the workspace links to the reset.
++
++import { beforeEach, describe, expect, it } from "vitest";
++import { renderIdentity } from "./auth";
++import { appState } from "./state";
++
++function signIn(mode: "demo" | "dev"): void {
++  document.getElementById("demoBanner")?.remove();
++  appState.session = {
++    principal: { kind: "human", email: mode === "demo" ? "demo@getkestrel.dev" : "dev@localhost" },
++    auth: { mode },
++  } as typeof appState.session;
++  renderIdentity();
++}
++
++describe("demo mode", () => {
++  beforeEach(() => signIn("demo"));
++
++  it("shows a Demo chip with no sign-out", () => {
++    const identity = document.getElementById("identity");
++    expect(identity?.textContent).toContain("Demo sandbox");
++    expect(identity?.querySelector("a[href*='logout']")).toBeNull();
++  });
++
++  it("shows the sandbox banner, linking to the reset's confirmation page", () => {
++    const banner = document.getElementById("demoBanner");
++    expect(banner?.textContent).toContain("private to this browser");
++    expect(banner?.querySelector("a.demo-reset")?.getAttribute("href")).toBe("/_demo/reset");
++    expect(banner?.querySelector("form")).toBeNull();
++    // It sits above the workspace, outside the routed view the router replaces.
++    expect(banner?.nextElementSibling?.classList.contains("layout")).toBe(true);
++    // Its height is published for the layout to make room for.
++    expect(document.documentElement.style.getPropertyValue("--demo-h")).toMatch(/px$/);
++  });
++
++  it("renders the banner once, however often identity is rendered", () => {
++    renderIdentity();
++    expect(document.querySelectorAll("#demoBanner")).toHaveLength(1);
++  });
++});
++
++describe("other modes", () => {
++  it("get no banner", () => {
++    signIn("dev");
++    expect(document.getElementById("demoBanner")).toBeNull();
++    expect(document.getElementById("identity")?.textContent).toContain("Local dev");
++  });
++});
+diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
+index fda090a..786bf56 100644
+--- a/public/dashboard/styles.css
++++ b/public/dashboard/styles.css
+@@ -781,6 +781,56 @@ body.nav-resizing .sidebar {
+ .identity .who.dev {
+   font-style: italic;
+ }
++/* Demo sandbox (patched by demo.getkestrel.dev): the identity chip, and the strip above
++   the workspace (client/auth.ts, renderDemoBanner). */
++.identity .who.demo {
++  color: var(--accent);
++  font-weight: 600;
++}
++.demo-banner {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  justify-content: center;
++  gap: 6px 16px;
++  padding: 8px 16px;
++  background: var(--accent-soft);
++  color: var(--ink);
++  border-bottom: 1px solid var(--line);
++  font-size: 14px;
++}
++.demo-banner a {
++  color: var(--accent);
++  font-weight: 600;
++}
++.demo-banner .demo-reset {
++  padding: 3px 12px;
++  border: 1px solid var(--accent);
++  border-radius: 999px;
++  text-decoration: none;
++}
++/* The strip sits above the full-height layout; its height (--demo-h, set by
++   renderDemoBanner, 0 elsewhere) comes off the layout's and the sticky sidebar's. */
++:root {
++  --demo-h: 0px;
++}
++.layout {
++  min-height: calc(100vh - var(--demo-h));
++}
++.sidebar-inner {
++  height: calc(100dvh - var(--demo-h));
++}
++@media (max-width: 539px) {
++  /* Clear the fixed hamburger at the top left; the drawer is full height again. */
++  .demo-banner {
++    justify-content: flex-start;
++    min-height: 64px;
++    padding-left: 64px;
++  }
++  .sidebar-inner {
++    height: 100dvh;
++  }
++}
+ .identity a.ghost {
+   font-size: 13px;
+   color: var(--muted);
+diff --git a/src/lib/page.ts b/src/lib/page.ts
+index fcd1285..207da04 100644
+--- a/src/lib/page.ts
++++ b/src/lib/page.ts
+@@ -241,10 +241,43 @@ export interface ReaderIdentity {
+   logoUrl?: string;
+ }
+ 
++/* Demo sandbox (patched by demo.getkestrel.dev): a strip pinned to the bottom of every
++   public page saying this publication is a private, temporary sandbox, with the way into
++   the editor and the reset. It rides the dev badge's injection points, so it reaches the
++   card pages, the reader shell and a hosted post page, but never a frozen render or a
++   sent email (I3). Self-contained, like the badge, because two of those pages have none
++   of the reader tokens. */
++const DEMO_BANNER_STYLE = `
++:root { --d-bg:#eef1fb; --d-ink:#1b1a17; --d-line:#d5dbf2; --d-accent:#3355cc; --d-accent-on:#ffffff; }
++@media (prefers-color-scheme: dark) { :root { --d-bg:#1b1f2e; --d-ink:#e5e7eb; --d-line:#2c3350; --d-accent:#7d9bff; --d-accent-on:#10131f; } }
++body { padding-bottom:72px; }
++.d-demo { position:fixed; left:0; right:0; bottom:0; z-index:60; display:flex; flex-wrap:wrap; align-items:center;
++          justify-content:center; gap:6px 14px; padding:10px 16px; background:var(--d-bg); color:var(--d-ink);
++          border-top:1px solid var(--d-line);
++          font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
++.d-demo a { color:var(--d-accent); font-weight:600; text-decoration:none; }
++.d-demo a:hover { text-decoration:underline; }
++.d-demo .d-reset { padding:3px 12px; border-radius:999px; border:1px solid var(--d-accent); }
++.d-demo .d-open { padding:4px 12px; border-radius:999px; background:var(--d-accent); color:var(--d-accent-on); }
++.d-demo a:focus-visible { outline:2px solid var(--d-accent); outline-offset:2px; }
++/* On a phone the strip wraps to a few lines; keep it compact and the page clear of it. */
++@media (max-width: 640px) {
++  body { padding-bottom:150px; }
++  .d-demo { font-size:13px; gap:6px 10px; padding:8px 12px; }
++  .d-demo .d-about { display:none; }
++}
++`;
++
++// Reset is a link to the demo's confirmation page, not a form here: a post page forbids
++// form posts (POST_PAGE_SECURITY_HEADERS' form-action 'none', so a form in a post's body
++// can't act on the admin API) and every public page forbids script, so the confirm step
++// is a page of its own.
++const DEMO_BANNER = `<div class="d-demo" role="note"><span><strong>Kestrel demo.</strong> This publication is your own private sandbox. It resets after a day away, and nothing you send leaves it.</span><a class="d-open" href="/dashboard/">Open the editor &rarr;</a><a class="d-reset" href="/_demo/reset">Reset demo</a><a class="d-about" href="https://getkestrel.dev">About Kestrel</a></div>`;
++
+ /** The pill's stylesheet, emitted beside it and only when it is, so a deployed page
+- *  carries neither the link nor its styles. */
++ *  carries neither the link nor its styles. (Patched: the demo strip's always.) */
+ function devDashboardStyle(url?: string): string {
+-  return url ? `<style>${DEV_BADGE_STYLE}</style>` : "";
++  return `<style>${DEMO_BANNER_STYLE}</style>${url ? `<style>${DEV_BADGE_STYLE}</style>` : ""}`;
+ }
+ 
+ /** The dev-only editor shortcut (SPEC §5/§11): a fixed corner pill linking a local
+@@ -255,9 +288,12 @@ function devDashboardStyle(url?: string): string {
+ function devDashboardBadge(url?: string): string {
+   // The "DEV" chip flags it as tooling; the title spells out the scope for anyone
+   // who wonders whether it ships — it never does (see the doc above).
+-  return url
+-    ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
+-    : "";
++  return (
++    DEMO_BANNER +
++    (url
++      ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
++      : "")
++  );
+ }
+ 
+ /** The dev-only shortcut's browser-only chrome for a hosted post page, which is not

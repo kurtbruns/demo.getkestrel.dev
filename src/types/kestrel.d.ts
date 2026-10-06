@@ -82,7 +82,7 @@ export function deliverToOutbox(
   recipients: { email: string; unsubscribeUrl: string }[],
   opts: { idempotencyKeyPrefix: string; idempotencyKey?: string },
 ): { email: string; accepted: true; providerId: string }[];
-export function fakeOutbox(): readonly { to: string; providerId: string }[];
+export function fakeOutbox(): readonly ({ to: string; providerId: string } & FakeEmail)[];
 export class FakeNotifier {
   send(to: string, message: FakeEmail, key: string): Promise<void>;
 }

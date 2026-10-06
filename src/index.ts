@@ -73,14 +73,20 @@ export function rateLimitKey(ip: string | null): string {
 
 /**
  * A sandbox's response, made safe to send: no shared cache may keep it (Kestrel marks its
- * public pages and media `public`, but here every page is one visitor's own), and a response
- * that starts a session is never stored at all, since it carries the cookie.
+ * public pages and media `public`, but here every page is one visitor's own), its HTML is
+ * always revalidated, and a response that starts a session is never stored at all, since
+ * it carries the cookie.
  */
 function privately(response: Response, newCookie: string | undefined): Response {
   const out = new Response(response.body, response);
   if (newCookie) {
     out.headers.set("cache-control", "private, no-store");
     out.headers.append("set-cookie", sessionCookie(newCookie));
+  } else if (out.headers.get("content-type")?.startsWith("text/html")) {
+    // A sandbox's pages change under the visitor (an edit, a reset, the idle wipe), so the
+    // browser revalidates them rather than showing a stale copy for Kestrel's 5 to 60
+    // minutes.
+    out.headers.set("cache-control", "private, no-cache");
   } else {
     // Kestrel's errors carry no cache header at all; those are private too.
     const cc = out.headers.get("cache-control");

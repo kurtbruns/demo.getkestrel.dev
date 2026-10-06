@@ -132,7 +132,7 @@ describe("Reset demo", () => {
     expect(await seedCount(stub)).toBe(1); // a fresh database, seeded once
   });
 
-  it("refuses a cross-site post, and anything but POST", async () => {
+  it("refuses a cross-site post, and anything but GET or POST", async () => {
     const v = visitor();
     await makeChanges(v);
     const cross = await v.fetch(RESET_PATH, {
@@ -145,7 +145,8 @@ describe("Reset demo", () => {
       headers: { origin: "https://elsewhere.example" },
     });
     expect(foreignOrigin.status).toBe(403);
-    expect((await v.fetch(RESET_PATH)).status).toBe(405);
+    // GET is the confirmation page; anything but GET or POST is refused.
+    expect((await v.fetch(RESET_PATH, { method: "PUT" })).status).toBe(405);
     expect(await subjects(v)).toContain(EDITED);
   });
 });
