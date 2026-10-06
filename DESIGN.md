@@ -195,8 +195,9 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 
 ## Lifecycle
 
-- **Idle TTL.** Every request records `lastSeen`. The DO's alarm also checks the TTL (about 24h); past it, the DO deletes its R2 prefix and calls `ctx.storage.deleteAll()`. The next request with that cookie gets a fresh sandbox.
-- **Reset.** A "Reset demo" control posts to a wrapper route (outside Kestrel's `/api`) that wipes the DO's storage and the session's R2 prefix, then re-migrates and re-seeds.
+- **Idle TTL.** Every request records `last_seen` in the sandbox's `demo_meta`. The DO's one alarm is armed for the earlier of the sweep's next work ("Sends") and the idle expiry, `last_seen` plus 24 hours (`IDLE_TTL_MS`). When it fires past the expiry, the DO wipes itself: its uploads under its R2 prefix (never the shared seed images), its whole SQLite database (`deleteAll`), and its alarm. A request with the same cookie afterwards gets a fresh, freshly seeded sandbox. A sandbox that was wiped or never used doesn't sweep.
+- **Reset.** The "Reset demo" control (#9) posts to `/_demo/reset`, a wrapper route outside Kestrel's paths, which the sandbox answers itself. It refuses anything but a POST from the demo's own pages: a browser's `Sec-Fetch-Site` must be `same-origin`, or lacking that, its `Origin` must match. It wipes the sandbox as the idle TTL does, migrates and seeds it again, and answers a 303 to `/dashboard/`.
+- **A new Kestrel release.** On its first start after a deploy, a sandbox seeded by another Kestrel release (its `seeded_kestrel` marker) is wiped and seeded fresh rather than migrated in place ("Updating the demo").
 - **Rate limit.** Creating a session costs a migrate, a seed of several hundred statements, and some storage, so new sessions are rate-limited per network with the Workers Rate Limiting binding `NEW_SESSIONS`: 10 a minute per IPv4 address (`cf-connecting-ip`), or per IPv6 /64, since one IPv6 client usually holds a whole /64 and could rotate through it. Past the limit, the visitor gets a short 429 page asking them to wait a minute, with no cookie and no sandbox. A returning visitor's cookie skips the limit. Requests that don't need a sandbox (static assets, `/favicon.ico`, `robots.txt`, `/health`) never create one.
 
 ## Configuration of the sandbox env
