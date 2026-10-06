@@ -143,11 +143,14 @@ Kestrel serves `/dashboard/` from Workers static assets (`assets.directory: ./di
 
 ## Media
 
-`env.MEDIA` is a wrapper with the R2 binding's `get`/`put`/`delete`/`head`/`list` shape:
+`env.MEDIA` is `SandboxMedia` (`src/media.ts`), a wrapper with the slice of the R2 binding's shape Kestrel uses: `get`, `put` (with `httpMetadata`) and `delete`. It also has `head` and `list` for the demo's own use.
 
-- Keys are rewritten to `sessions/<session-hash>/<key>`, so a sandbox can only address its own objects.
-- The seed's images are written once to a shared `seed/<kestrel-version>/` prefix. A sandbox's read of a seed key falls back to that prefix when its own copy is absent, so seeding a new sandbox writes no image bytes.
-- Uploads are capped per object and per session (for example 2 MB and 20 MB), and are deleted along with the session. Disabling uploads outright is an acceptable first cut.
+- **Scoped keys.** Every key is rewritten to `sessions/<sandbox DO id>/<key>`, so a sandbox can only address its own objects. A key with an empty, `.` or `..` segment, or a leading `/`, is refused with Kestrel's own `HttpError`: a 404 for a read (Kestrel's router decodes `/media/:key`, so `..%2F` arrives as `../`) and a 400 for a write, never a 500. `list` returns only the sandbox's own objects, with the prefix stripped.
+- **Shared seed images.** Kestrel's seed is given a separate view of the sandbox's media (`seedView`, in a seed-only env) whose `put` writes a prefix every sandbox shares, `seed/<kestrel tag>/`, once (skipped if the object is already there), so seeding a new sandbox writes no image bytes. Only the seed ever holds that view: the bucket Kestrel's request handlers see can never write the shared prefix. A sandbox's read of a key it doesn't hold falls back to that prefix. A re-seed first clears the sandbox's own uploads (which Kestrel's `resetAll` can't reach), and the seed view drops anything that would shadow a seed key, so a re-seed restores the seed's images. Old tags' `seed/` prefixes are left in place; they're small, and nothing may delete the current tag's.
+- **Tombstones.** Deleting a key records a tombstone in the sandbox's SQLite, so a deleted seed image (a removed logo, a deleted post's cover) stays deleted for that sandbox rather than falling back to the shared copy. Only a write that lands clears it: a refused or failed upload leaves the key deleted.
+- **Caps.** Uploads are capped at 2 MB per object (which binds post images; Kestrel's own caps are 5 MB for those and 512 KB for the logo) and 20 MB per sandbox, with the byte count kept in the sandbox's SQLite. The size is checked and reserved with no await in between, before the bytes go to R2, so parallel uploads (a DO serves other requests while it awaits R2) can't pass the cap together. A failed write gives the reservation back. Over a cap, `put` throws Kestrel's own `HttpError(413, "upload_too_large")`, which Kestrel's router answers as a 413 with its usual error body, and nothing is written. The DO also refuses an upload request that declares more than the per-object cap plus a multipart allowance (413), or no `Content-Length` at all (411), before Kestrel reads the body.
+- **No shared caching.** Seeded post ids are the same in every sandbox, so one `/media/...` URL names different bytes in different sandboxes. The Worker makes every sandbox response private ("Session identity"), so Kestrel's `public, max-age=3600` on media becomes `private, max-age=3600` with `Vary: Cookie`, and no shared cache keeps one visitor's copy for another.
+- **Cleanup.** `clear()` deletes everything under the sandbox's prefix and its records, for the idle-TTL cleanup and reset (#8). The shared seed prefix is never deleted by a sandbox.
 
 ## Sends
 
@@ -190,6 +193,5 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 ## Open questions
 
 - **Alarm cadence vs. cost.** Is "every minute only while a send is scheduled or in flight" enough to keep a demo send live, or should the alarm also run while the visitor is active?
-- **Uploads.** Enable capped per-session uploads at launch, or ship with uploads disabled?
 - **Landing.** Should `/` stay Kestrel's public landing page (the visitor's own sandbox), or redirect first-time visitors to `/dashboard/`? Kestrel's rule that no public page links into an admin path is about Access-gated deploys, but the demo banner can offer the way in either way.
 - **TTL and storage cost.** 24h idle is a guess. Measure the per-sandbox SQLite size after seed and pick the TTL and the rate limit together.

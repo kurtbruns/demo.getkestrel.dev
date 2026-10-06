@@ -30,6 +30,14 @@ declare const kestrel: {
 };
 export default kestrel;
 
+/** src/lib/errors.ts: thrown anywhere in a request, Kestrel's router answers it as
+ *  `{ error: code, message }` with this status. */
+export class HttpError extends Error {
+  constructor(status: number, code: string, message?: string, details?: Record<string, unknown>);
+  readonly status: number;
+  readonly code: string;
+}
+
 /** src/env.ts: resolve and validate config from `env`; throws on config that would run wrong. */
 export function getConfig(env: KestrelEnv): KestrelConfig;
 
