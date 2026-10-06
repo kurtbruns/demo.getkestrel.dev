@@ -114,11 +114,12 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 - `prepare(sql)` (about 143 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (23 sites, in `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `send/schedule`, `send/remake`, `send/budget`).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
-- Results: `all()` returns `{ results, success, meta }`; Kestrel reads `meta.changes` (16 sites), so `run()` must report it accurately.
-- `batch` must be atomic: all statements commit or none do, which the adapter gets from `ctx.storage.transactionSync`.
+- Results: `all()` and `run()` return `{ results, success, meta }`. Kestrel reads `meta.changes` (16 sites), so it must be exact. DO SQLite's cursor reports `rowsWritten`, which also counts index writes, so the adapter reads SQLite's own `changes()` (and `last_insert_rowid()`) after each statement and uses `rowsWritten` only to tell whether the statement wrote at all, which a SELECT following a write needs.
+- `batch` must be atomic: all statements commit or none do, which the adapter gets from `ctx.storage.transactionSync`. Kestrel also uses `batch` as a consistent multi-SELECT read (the send list and feed read a sequence number, counts and rows together), so every entry returns its full rows, all read inside that one transaction.
 - Error text matters: `send/schedule.ts` recognizes a double schedule by matching `UNIQUE constraint failed: sends.post_id` in the error message, so the adapter must let SQLite's constraint messages through unchanged.
-- Schema features: every table is `STRICT`, queries use `json_each` to bind lists, and some use `RETURNING`. DO SQLite supports all three; the adapter test suite proves it by running Kestrel's own migrations and a representative slice of its queries.
-- Migrations: the adapter's migrate step applies `migrations/*.sql` in order and records them in its own table. DO SQLite refuses `BEGIN`/`COMMIT` in `sql.exec`, so each file runs inside `transactionSync`.
+- Schema features: every table is `STRICT`, queries use `json_each` to bind lists, some use `RETURNING`, and foreign keys are enforced, as on D1. DO SQLite supports all four, and `test/d1-adapter.spec.ts` proves it on Kestrel's own schema, ending with Kestrel's full Field Notes seed run through the adapter.
+- Held to D1's limits: at most 100 bound parameters, `undefined` refused as a bind value, and `first(column)` refusing an unknown column, so the demo is no more lenient than a real deployment.
+- Migrations: `src/d1/migrate.ts` applies Kestrel's `migrations/*.sql` in name order, each inside `transactionSync` (DO SQLite refuses `BEGIN`/`COMMIT` in `sql.exec`), and records each in its own `demo_migrations` table, so a re-run is a no-op. The SQL comes from the same generated module as the demo images, `vendor/demo-assets.ts`, so a Kestrel release with a new migration needs no change here.
 
 ### Seeding
 

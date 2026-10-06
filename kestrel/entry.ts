@@ -7,7 +7,7 @@
  * Keep the two in step: an export added here is declared there.
  */
 
-export { demoImages, demoLogo } from "../vendor/demo-assets";
+export { demoImages, demoLogo, migrations } from "../vendor/demo-assets";
 export { seedDatabase } from "../vendor/kestrel/src/dev/seed";
 export { getConfig } from "../vendor/kestrel/src/env";
 export { BUILD_INFO } from "../vendor/kestrel/src/generated/version";

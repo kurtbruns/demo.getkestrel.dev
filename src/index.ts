@@ -8,6 +8,8 @@
 import kestrel, { BUILD_INFO } from "kestrel";
 import { ensureSeeded, sandboxEnv } from "./sandbox";
 
+export { SandboxDO } from "./sandbox_do";
+
 /**
  * The seed check, at most one in flight per database. Keyed by the database, not held in
  * one module-level promise: Durable Objects of one class share an isolate, so a single
