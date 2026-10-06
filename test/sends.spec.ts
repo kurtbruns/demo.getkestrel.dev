@@ -3,6 +3,7 @@
 // there's something to send; and nothing can reach the network.
 
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { deliverToOutbox, FakeNotifier, fakeNotifications, fakeOutbox } from "kestrel";
 import { describe, expect, it } from "vitest";
 import { checkSandboxConfig, sandboxEnv } from "../src/sandbox";
 import { SAME_ORIGIN, type Visitor, visitor } from "./support";
@@ -151,6 +152,7 @@ describe("network egress", () => {
         SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-x.pem",
       }),
     });
+    expect(res.status).toBe(200);
     await res.arrayBuffer();
     expect(await runInDurableObject(stub, (i) => i.egressRefused())).toBe(before);
   });
@@ -160,10 +162,112 @@ describe("the sandbox config", () => {
   it("runs Kestrel only on the fake transport", () => {
     const fake = sandboxEnv(env, {} as D1Database, {} as R2Bucket);
     expect(() => checkSandboxConfig(fake)).not.toThrow();
-    // Kestrel's own config check refuses a real provider without credentials first.
+    // Kestrel's own config check refuses a real provider without credentials first...
     expect(() => checkSandboxConfig({ ...fake, PROVIDER: "ses" })).toThrow();
+    // ...and with them, the sandbox's own check does.
+    const ses = {
+      ...fake,
+      PROVIDER: "ses",
+      AWS_ACCESS_KEY_ID: "AKIA",
+      AWS_SECRET_ACCESS_KEY: "secret",
+      SNS_TOPIC_ARN: "arn:aws:sns:us-east-1:123456789012:kestrel",
+      FROM_ADDRESS: "Field Notes <newsletter@getkestrel.dev>",
+      SENDING_DOMAIN: "getkestrel.dev",
+    } as unknown as ReturnType<typeof sandboxEnv>;
+    expect(() => checkSandboxConfig(ses)).toThrow(/only on the fake transport/);
     expect(() =>
       checkSandboxConfig({ ...fake, NOTIFY: {} } as unknown as ReturnType<typeof sandboxEnv>),
     ).toThrow(/only on the fake transport/);
+  });
+});
+
+describe("the fake transport's memory (patches/0002-fake-outbox-bound.patch)", () => {
+  const email = { subject: "s", html: "<p>h</p>", text: "t" };
+
+  it("keeps the newest 500 messages and 5,000 idempotency keys", () => {
+    const tag = crypto.randomUUID();
+    const recipients = Array.from({ length: 5200 }, (_, i) => ({
+      email: `r${i}-${tag}@field-notes.example`,
+      unsubscribeUrl: "https://demo.getkestrel.dev/u",
+    }));
+    deliverToOutbox(email, recipients, { idempotencyKeyPrefix: tag });
+    const outbox = fakeOutbox();
+    expect(outbox.length).toBe(500);
+    expect(outbox.at(-1)?.to).toBe(recipients.at(-1)?.email);
+    // Within the window a retried batch is deduped; the oldest keys have been evicted.
+    const before = fakeOutbox().length;
+    const newest = recipients.slice(-10);
+    deliverToOutbox(email, newest, { idempotencyKeyPrefix: tag });
+    expect(fakeOutbox().length).toBe(before);
+    expect(fakeOutbox().at(-1)?.to).toBe(recipients.at(-1)?.email); // nothing re-delivered
+    deliverToOutbox(email, recipients.slice(0, 1), { idempotencyKeyPrefix: tag });
+    expect(fakeOutbox().at(-1)?.to).toBe(recipients[0]?.email); // evicted, so delivered again
+  });
+
+  it("keeps the newest 500 notifications", async () => {
+    const notifier = new FakeNotifier();
+    const tag = crypto.randomUUID();
+    for (let i = 0; i < 520; i++) {
+      await notifier.send(`n${i}-${tag}@field-notes.example`, email, `${tag}:${i}`);
+    }
+    const notes = fakeNotifications();
+    expect(notes.length).toBe(500);
+    expect(notes.at(-1)?.key).toBe(`${tag}:519`);
+  });
+});
+
+describe("the alarm while a send is in flight", () => {
+  it("is a tick away, even with a scheduled send due later", async () => {
+    const v = visitor();
+    await v.fetch("/posts");
+    const stub = await v.sandbox();
+    const post = await draftId(v);
+    const scheduled = await v.fetch(`/posts/${post}/schedule`, {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ fire_at: Date.now() + 61_000 }),
+    });
+    const { send } = (await scheduled.json()) as { send: SendView };
+    // As a run that crashed mid-send would leave it: sending, with an expired lease.
+    await runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec(
+        "UPDATE sends SET status = 'sending', locked_until = ? WHERE id = ?",
+        Date.now() - 1000,
+        send.id,
+      );
+    });
+    const before = Date.now();
+    await v.fetch("/posts");
+    const alarm = (await alarmAt(v)) ?? 0;
+    expect(alarm).toBeGreaterThanOrEqual(before + 59_000);
+    expect(alarm).toBeLessThanOrEqual(Date.now() + 61_000);
+  });
+
+  it("is cleared after the last send goes out", async () => {
+    const v = visitor();
+    for (const send of await scheduledSends(v)) {
+      await v.fetch(`/sends/${send.id}/cancel`, {
+        method: "POST",
+        headers: { "sec-fetch-site": "same-origin" },
+      });
+    }
+    const stub = await v.sandbox();
+    const post = await draftId(v);
+    const scheduled = await v.fetch(`/posts/${post}/schedule`, {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ fire_at: Date.now() + 61_000 }),
+    });
+    const { send } = (await scheduled.json()) as { send: SendView };
+    await runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec(
+        "UPDATE sends SET fire_at = ? WHERE id = ?",
+        Date.now() - 1000,
+        send.id,
+      );
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect((await v.json<{ send: SendView }>(`/sends/${send.id}`)).body.send.status).toBe("sent");
+    expect(await alarmAt(v)).toBeNull();
   });
 });

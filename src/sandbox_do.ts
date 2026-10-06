@@ -9,12 +9,9 @@ import { DurableObject } from "cloudflare:workers";
 import kestrel, { BUILD_INFO, type KestrelEnv, migrations } from "kestrel";
 import { DurableObjectD1 } from "./d1/adapter";
 import { migrate } from "./d1/migrate";
-import { blockEgress, egress } from "./egress";
+import { egress } from "./egress";
 import { MAX_OBJECT_BYTES, SandboxMedia } from "./media";
 import { checkSandboxConfig, ensureSeeded, sandboxEnv } from "./sandbox";
-
-// Before any of Kestrel's code runs in this isolate.
-blockEgress();
 
 /** Kestrel's sweep runs once a minute; a send in flight is swept again a tick later. */
 const SWEEP_TICK_MS = 60_000;
@@ -76,18 +73,29 @@ export class SandboxDO extends DurableObject<Env> {
     try {
       return await this.handle(request);
     } finally {
-      // Any request may have scheduled, moved or canceled a send.
-      await this.scheduleSweep();
+      // Any request may have scheduled, moved or canceled a send. A failure here is logged,
+      // never thrown over the request's own result or error.
+      await this.armAlarm().catch((err: unknown) => {
+        // biome-ignore lint/suspicious/noConsole: the sandbox's only log line for this.
+        console.error("demo.alarm_arm_failed", err);
+      });
     }
   }
 
-  /** Run Kestrel's send sweep for this sandbox, then arm the next one if it's needed. */
+  /**
+   * Run Kestrel's send sweep for this sandbox, then arm the next one. A tick that fails is
+   * logged, as Kestrel's own cron would, and the next tick comes from `armAlarm`, not the
+   * runtime's alarm retries.
+   */
   async alarm(): Promise<void> {
     await this.start();
     try {
       await this.sweep();
+    } catch (err) {
+      // biome-ignore lint/suspicious/noConsole: the sandbox's only log line for a failed tick.
+      console.error("demo.sweep_failed", err);
     } finally {
-      await this.scheduleSweep();
+      await this.armAlarm();
     }
   }
 
@@ -116,13 +124,13 @@ export class SandboxDO extends DurableObject<Env> {
   }
 
   /**
-   * Arm the alarm for when Kestrel's sweep next has work: a tick from now while a send is in
-   * flight, else the earliest scheduled send's fire time; clear it when there is none. Reads
-   * Kestrel's `sends` table directly (read-only). A sandbox with nothing to send never wakes.
+   * When the sandbox next needs to wake, or null for never: the earliest of the sweep's
+   * next work, a tick from now while a send is in flight and the earliest scheduled send's
+   * fire time otherwise. Every reason to wake is a term here, so the one alarm always serves
+   * the soonest. Reads Kestrel's `sends` table directly (read-only).
    */
-  private async scheduleSweep(): Promise<void> {
+  private nextWake(now: number): number | null {
     const sql = this.ctx.storage.sql;
-    const now = Date.now();
     const sending = sql
       .exec<{ n: number }>("SELECT count(*) AS n FROM sends WHERE status = 'sending'")
       .one().n;
@@ -131,12 +139,16 @@ export class SandboxDO extends DurableObject<Env> {
         "SELECT min(fire_at) AS at FROM sends WHERE status = 'scheduled'",
       )
       .one().at;
-    let next: number | null = null;
-    if (sending > 0) {
-      next = now + SWEEP_TICK_MS;
-    } else if (firstDue !== null) {
-      next = Math.max(firstDue, now + 1000);
-    }
+    const times = [
+      sending > 0 ? now + SWEEP_TICK_MS : null,
+      firstDue !== null ? Math.max(firstDue, now + 1000) : null,
+    ].filter((t): t is number => t !== null);
+    return times.length > 0 ? Math.min(...times) : null;
+  }
+
+  /** Set the alarm to `nextWake`, or clear it. A sandbox with nothing to do never wakes. */
+  private async armAlarm(): Promise<void> {
+    const next = this.nextWake(Date.now());
     const current = await this.ctx.storage.getAlarm();
     if (next === null) {
       if (current !== null) {

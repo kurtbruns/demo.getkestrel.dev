@@ -8,8 +8,10 @@ Why: they are module state. In local dev and Kestrel's tests the process is shor
 and the specs clear them, but the demo runs the fake transport in production, in
 long-lived isolates shared by many visitors' sandboxes, where they would grow without
 bound. Nothing reads them over HTTP outside dev mode (/api/dev/outbox is dev-only), so
-this is a memory bound, not a privacy fix. The key window stays far above one batch (the
-fake sends a whole audience as one), so a retried batch is still deduped.
+this is a memory bound, not a privacy fix. Dedup within the key window is best-effort:
+the window is shared by every sandbox in an isolate, and a missed dedup only adds a
+duplicate row to the fake outbox, never a second delivery record (those are per recipient
+in the sandbox's SQLite).
 
 See DESIGN.md, "Module-level state in Kestrel" and "The patch set".
 

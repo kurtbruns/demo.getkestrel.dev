@@ -70,6 +70,24 @@ export function seedDatabase(
   logoFile?: { bytes: ArrayBuffer; contentType: string },
 ): Promise<SeedSummary>;
 
+/** The fake transport's module state (src/providers/fake.ts, src/notify/fake.ts), bounded
+ *  by patches/0002-fake-outbox-bound.patch. For its tests. */
+export interface FakeEmail {
+  subject: string;
+  html: string;
+  text: string;
+}
+export function deliverToOutbox(
+  rendered: FakeEmail,
+  recipients: { email: string; unsubscribeUrl: string }[],
+  opts: { idempotencyKeyPrefix: string; idempotencyKey?: string },
+): { email: string; accepted: true; providerId: string }[];
+export function fakeOutbox(): readonly { to: string; providerId: string }[];
+export class FakeNotifier {
+  send(to: string, message: FakeEmail, key: string): Promise<void>;
+}
+export function fakeNotifications(): readonly { to: string; key: string }[];
+
 /** src/generated/version.ts: the build stamp. */
 export const BUILD_INFO: {
   version: string;

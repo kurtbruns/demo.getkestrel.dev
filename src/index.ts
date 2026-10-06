@@ -6,6 +6,8 @@
  * visit (a GET with no valid cookie) gets a new session, rate-limited per network.
  */
 
+// First, before Kestrel's modules evaluate: no request may leave the demo (src/egress.ts).
+import "./egress-install";
 import { BUILD_INFO } from "kestrel";
 import { mintSession, readSession, sandboxName, sessionCookie } from "./session";
 
