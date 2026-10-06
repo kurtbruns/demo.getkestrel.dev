@@ -34,3 +34,5 @@ jobs:
       - run: npm test
       # Bundle the Worker as a deploy would, without deploying.
       - run: npx wrangler deploy --dry-run --outdir dist
+      # And the production env, as the deploy workflow would deploy it.
+      - run: npm run deploy:check

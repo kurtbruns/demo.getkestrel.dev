@@ -1,0 +1,49 @@
+# Deploy to demo.getkestrel.dev on every push to main, and on demand. It runs the same gate
+# as CI first, against Kestrel at .kestrel-version plus patches/, then deploys the
+# `production` env.
+#
+# Off until enabled: the deploy step runs only when the repo variable DEPLOY_ENABLED is
+# "true", so merges before the Cloudflare setup is done (README.md, "Deploy") build and check
+# without trying to deploy. CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are secrets of the
+# `production` GitHub Environment, as on getkestrel.dev, so the job opts into it.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Clone Kestrel at .kestrel-version, apply patches/, npm ci and build its client.
+      - run: npm run build
+      - run: npm run check
+      - run: npm test
+      - run: npm run deploy:check
+      - name: Deploy to Cloudflare Workers
+        if: vars.DEPLOY_ENABLED == 'true'
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy skipped
+        if: vars.DEPLOY_ENABLED != 'true'
+        run: echo "::notice::Deploy skipped; set the repo variable DEPLOY_ENABLED to true once Cloudflare is set up (README.md, \"Deploy\")."
