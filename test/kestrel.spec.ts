@@ -82,7 +82,7 @@ describe("Kestrel in a sandbox", () => {
   it("builds Kestrel's env from an allowlist, whatever the Worker is bound", async () => {
     const worker = env as unknown as Record<string, unknown>;
     expect(worker.DEV_AUTH_SECRET).toBeDefined(); // the leak this guards against is set up
-    expect(Object.keys(sandboxEnv(env, {} as D1Database)).sort()).toEqual(
+    expect(Object.keys(sandboxEnv(env, {} as D1Database, {} as R2Bucket)).sort()).toEqual(
       [
         "APP_ORIGIN",
         "ARCHIVE_BASE_PATH",
@@ -122,7 +122,7 @@ describe("Kestrel in a sandbox", () => {
 
   it("seeds once per Kestrel version, and again after a version change", async () => {
     await runInDurableObject(await me.sandbox(), async (instance: SandboxDO) => {
-      const senv = sandboxEnv(env, instance.db.asD1());
+      const senv = sandboxEnv(env, instance.db.asD1(), instance.media.asR2());
       expect(await ensureSeeded(senv, BUILD_INFO.tag)).toBe(false);
       expect(await ensureSeeded(senv, "v0.0.0-older")).toBe(true);
       expect(await ensureSeeded(senv, "v0.0.0-older")).toBe(false);

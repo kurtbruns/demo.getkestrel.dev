@@ -12,3 +12,4 @@ export { seedDatabase } from "../vendor/kestrel/src/dev/seed";
 export { getConfig } from "../vendor/kestrel/src/env";
 export { BUILD_INFO } from "../vendor/kestrel/src/generated/version";
 export { default } from "../vendor/kestrel/src/index";
+export { HttpError } from "../vendor/kestrel/src/lib/errors";

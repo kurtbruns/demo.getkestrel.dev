@@ -271,7 +271,7 @@ describe("batch", () => {
 describe("Kestrel on the adapter", () => {
   it("runs Kestrel's full Field Notes seed", async () => {
     await inSandbox(async (db) => {
-      const kenv = sandboxEnv(env, db.asD1());
+      const kenv = sandboxEnv(env, db.asD1(), env.MEDIA);
       const summary = await seedDatabase(kenv, getConfig(kenv), demoImages, demoLogo);
       expect(summary.posts.sent).toBeGreaterThan(0);
       expect(summary.posts.draft).toBeGreaterThan(0);

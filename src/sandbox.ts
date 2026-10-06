@@ -6,15 +6,19 @@
 import { demoImages, demoLogo, getConfig, type KestrelEnv, seedDatabase } from "kestrel";
 
 /**
- * The env Kestrel runs on, over the sandbox's own database. Built from an allowlist, never by spreading the Worker's env, so
+ * The env Kestrel runs on, over the sandbox's own database and media. Built from an allowlist, never by spreading the Worker's env, so
  * nothing the deploy happens to bind (a `DEV_AUTH_SECRET`, Access settings, a `NOTIFY`
  * binding, a provider or its credentials) can reach Kestrel. The transport is always the
  * fake.
  */
-export function sandboxEnv(env: Pick<Env, "MEDIA" | "APP_ORIGIN">, db: D1Database): KestrelEnv {
+export function sandboxEnv(
+  env: Pick<Env, "APP_ORIGIN">,
+  db: D1Database,
+  media: R2Bucket,
+): KestrelEnv {
   return {
     DB: db,
-    MEDIA: env.MEDIA,
+    MEDIA: media,
     PROVIDER: "fake",
     APP_ORIGIN: env.APP_ORIGIN,
     ARCHIVE_BASE_PATH: "/archive",

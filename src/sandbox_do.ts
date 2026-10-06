@@ -8,11 +8,33 @@ import { DurableObject } from "cloudflare:workers";
 import kestrel, { BUILD_INFO, type KestrelEnv, migrations } from "kestrel";
 import { DurableObjectD1 } from "./d1/adapter";
 import { migrate } from "./d1/migrate";
+import { MAX_OBJECT_BYTES, SandboxMedia } from "./media";
 import { ensureSeeded, sandboxEnv } from "./sandbox";
+
+/** Uploads Kestrel takes (src/app.ts at the pinned tag). */
+function isUpload(request: Request, path: string): boolean {
+  return (
+    request.method === "POST" &&
+    (path === "/api/settings/logo" || /^\/posts\/[^/]+\/images$/.test(path))
+  );
+}
+
+/**
+ * The most a request may declare before Kestrel reads it. The real caps are enforced as the
+ * bytes are stored (src/media.ts); this only keeps an oversized body from being buffered,
+ * allowing for a multipart envelope around an object at the cap.
+ */
+const MAX_UPLOAD_REQUEST_BYTES = MAX_OBJECT_BYTES + 256 * 1024;
 
 export class SandboxDO extends DurableObject<Env> {
   readonly db = new DurableObjectD1(this.ctx.storage);
-  private readonly kenv: KestrelEnv = sandboxEnv(this.env, this.db.asD1());
+  readonly media = new SandboxMedia(
+    this.env.MEDIA,
+    this.ctx.storage.sql,
+    `sessions/${this.ctx.id.toString()}/`,
+    `seed/${BUILD_INFO.tag}/`,
+  );
+  private readonly kenv: KestrelEnv = sandboxEnv(this.env, this.db.asD1(), this.media.asR2());
   private starting: Promise<void> | undefined;
 
   /**
@@ -27,7 +49,7 @@ export class SandboxDO extends DurableObject<Env> {
     this.starting ??= this.ctx
       .blockConcurrencyWhile(async () => {
         migrate(this.ctx.storage, migrations);
-        await ensureSeeded(this.kenv, BUILD_INFO.tag);
+        await this.media.seeding(() => ensureSeeded(this.kenv, BUILD_INFO.tag));
       })
       .catch((err: unknown) => {
         this.starting = undefined;
@@ -38,6 +60,27 @@ export class SandboxDO extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     await this.start();
+    const path = new URL(request.url).pathname;
+    if (isUpload(request, path)) {
+      const declared = Number(request.headers.get("content-length") ?? Number.NaN);
+      if (!Number.isFinite(declared)) {
+        return Response.json(
+          { error: "length_required", message: "an upload must declare its Content-Length" },
+          { status: 411 },
+        );
+      }
+      if (declared > MAX_UPLOAD_REQUEST_BYTES) {
+        return Response.json(
+          {
+            error: "upload_too_large",
+            message: `an upload must be ${MAX_OBJECT_BYTES / 1024 / 1024} MB or smaller`,
+          },
+          { status: 413 },
+        );
+      }
+    }
+    // The Worker makes every sandbox response private (src/index.ts), media included: the
+    // same /media URL names different bytes in different sandboxes.
     return kestrel.fetch(request, this.kenv, this.executionContext());
   }
 
