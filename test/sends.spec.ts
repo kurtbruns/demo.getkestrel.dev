@@ -6,6 +6,7 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { deliverToOutbox, FakeNotifier, fakeNotifications, fakeOutbox } from "kestrel";
 import { describe, expect, it } from "vitest";
 import { checkSandboxConfig, sandboxEnv } from "../src/sandbox";
+import { IDLE_TTL_MS } from "../src/sandbox_do";
 import { SAME_ORIGIN, type Visitor, visitor } from "./support";
 
 interface SendView {
@@ -28,20 +29,32 @@ async function alarmAt(v: Visitor): Promise<number | null> {
   return runInDurableObject(await v.sandbox(), (_i, state) => state.storage.getAlarm());
 }
 
+/** When the sandbox expires: the idle TTL after its last request (#8). */
+async function expiresAt(v: Visitor): Promise<number> {
+  return runInDurableObject(await v.sandbox(), (_i, state) => {
+    const row = state.storage.sql
+      .exec<{ value: string }>("SELECT value FROM demo_meta WHERE key = 'last_seen'")
+      .one();
+    return Number(row.value) + IDLE_TTL_MS;
+  });
+}
+
 async function scheduledSends(v: Visitor): Promise<SendView[]> {
   const { body } = await v.json<{ sends: SendView[] }>("/sends?status=scheduled");
   return body.sends;
 }
 
 describe("the sweep alarm", () => {
-  it("is armed for the earliest scheduled send", async () => {
+  it("is armed for the earliest scheduled send, or the idle expiry when that's sooner", async () => {
     const v = visitor();
     const seeded = await scheduledSends(v);
     expect(seeded).toHaveLength(1); // the seed's "A quick note", two days out
-    expect(await alarmAt(v)).toBe(seeded[0]?.fire_at);
+    // Two days out is past the one-day idle expiry, which comes first.
+    expect(await alarmAt(v)).toBe(Math.min(seeded[0]?.fire_at ?? Infinity, await expiresAt(v)));
+    expect(await alarmAt(v)).toBe(await expiresAt(v));
   });
 
-  it("is cleared when nothing is scheduled or sending", async () => {
+  it("waits only for the idle expiry when nothing is scheduled or sending", async () => {
     const v = visitor();
     for (const send of await scheduledSends(v)) {
       // No body, so no content type: a cancel declares none.
@@ -52,7 +65,7 @@ describe("the sweep alarm", () => {
       expect(res.status).toBe(200);
     }
     expect(await scheduledSends(v)).toEqual([]);
-    expect(await alarmAt(v)).toBeNull();
+    expect(await alarmAt(v)).toBe(await expiresAt(v));
   });
 });
 
@@ -102,10 +115,10 @@ describe("a scheduled send", () => {
     expect(accepted).toBeGreaterThan(100);
     expect(await runInDurableObject(stub, (i) => i.egressRefused())).toBe(refusedBefore);
 
-    // Only the seed's send is left, so the alarm goes back to it.
+    // Only the seed's send is left, two days out, so the idle expiry is next.
     const remaining = await scheduledSends(v);
     expect(remaining).toHaveLength(1);
-    expect(await alarmAt(v)).toBe(remaining[0]?.fire_at);
+    expect(await alarmAt(v)).toBe(Math.min(remaining[0]?.fire_at ?? Infinity, await expiresAt(v)));
   });
 });
 
@@ -243,7 +256,7 @@ describe("the alarm while a send is in flight", () => {
     expect(alarm).toBeLessThanOrEqual(Date.now() + 61_000);
   });
 
-  it("is cleared after the last send goes out", async () => {
+  it("falls back to the idle expiry after the last send goes out", async () => {
     const v = visitor();
     for (const send of await scheduledSends(v)) {
       await v.fetch(`/sends/${send.id}/cancel`, {
@@ -268,6 +281,6 @@ describe("the alarm while a send is in flight", () => {
     });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect((await v.json<{ send: SendView }>(`/sends/${send.id}`)).body.send.status).toBe("sent");
-    expect(await alarmAt(v)).toBeNull();
+    expect(await alarmAt(v)).toBe(await expiresAt(v));
   });
 });

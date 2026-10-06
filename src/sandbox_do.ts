@@ -16,6 +16,32 @@ import { checkSandboxConfig, ensureSeeded, sandboxEnv } from "./sandbox";
 /** Kestrel's sweep runs once a minute; a send in flight is swept again a tick later. */
 const SWEEP_TICK_MS = 60_000;
 
+/** How long a sandbox outlives its visitor's last request before it's deleted (#8). */
+export const IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** How long after a failed wipe the alarm tries again. */
+const WIPE_RETRY_MS = 5 * 60 * 1000;
+
+/** `last_seen` is rewritten at most this often, so a busy visitor isn't two writes a request. */
+const TOUCH_EVERY_MS = 60 * 1000;
+
+/** The visitor's "Reset demo" control posts here (#9's banner). */
+export const RESET_PATH = "/_demo/reset";
+
+/**
+ * Whether a write comes from the demo's own pages: a browser says so in Sec-Fetch-Site
+ * (which a page can't forge), or, lacking it, sends an Origin that matches. A client that
+ * isn't a browser sends neither and passes, as Kestrel's own admin gate does.
+ */
+function isOwnWrite(request: Request, url: URL): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site !== null) {
+    return site === "same-origin" || site === "none";
+  }
+  const origin = request.headers.get("origin");
+  return origin === null || origin === url.origin;
+}
+
 /** Uploads Kestrel takes (src/app.ts at the pinned tag). */
 function isUpload(request: Request, path: string): boolean {
   return (
@@ -57,6 +83,13 @@ export class SandboxDO extends DurableObject<Env> {
     this.starting ??= this.ctx
       .blockConcurrencyWhile(async () => {
         checkSandboxConfig(this.kenv);
+        // Seeded by another Kestrel release: start over rather than migrate in place
+        // (DESIGN.md, "Updating the demo"). Sandboxes are disposable; a fresh one is correct.
+        const seededBy = this.meta("seeded_kestrel");
+        if (seededBy !== null && seededBy !== BUILD_INFO.tag) {
+          await this.wipe();
+        }
+        this.media.init();
         migrate(this.ctx.storage, migrations);
         // A re-seed first clears the sandbox's own uploads, which Kestrel's resetAll can't.
         await ensureSeeded(this.seedEnv, BUILD_INFO.tag, () => this.media.clear());
@@ -70,24 +103,65 @@ export class SandboxDO extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     await this.start();
+    // The visitor is here: stamped before the request runs, so an expiry alarm delivered
+    // while it awaits I/O sees a visitor, not an idle sandbox to wipe.
+    this.touch();
     try {
       return await this.handle(request);
     } finally {
       // Any request may have scheduled, moved or canceled a send. A failure here is logged,
       // never thrown over the request's own result or error.
-      await this.armAlarm().catch((err: unknown) => {
-        // biome-ignore lint/suspicious/noConsole: the sandbox's only log line for this.
-        console.error("demo.alarm_arm_failed", err);
-      });
+      await Promise.resolve()
+        .then(() => {
+          this.touch();
+          return this.armAlarm();
+        })
+        .catch((err: unknown) => {
+          // biome-ignore lint/suspicious/noConsole: the sandbox's only log line for this.
+          console.error("demo.alarm_arm_failed", err);
+        });
     }
   }
 
   /**
-   * Run Kestrel's send sweep for this sandbox, then arm the next one. A tick that fails is
+   * The one alarm does both jobs: delete the sandbox once its visitor has been gone the idle
+   * TTL, and otherwise run Kestrel's send sweep, then arm the next wake. A tick that fails is
    * logged, as Kestrel's own cron would, and the next tick comes from `armAlarm`, not the
    * runtime's alarm retries.
    */
   async alarm(): Promise<void> {
+    const lastSeen = Number(this.meta("last_seen") ?? Number.NaN);
+    const seededBy = this.meta("seeded_kestrel");
+    if (seededBy === null) {
+      // Nothing here: wiped, or never used.
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    // Expired, or seeded by another Kestrel release (which a request would wipe and seed
+    // again): wipe it here, and never seed from an alarm. The visitor's next request, if
+    // any, starts it fresh.
+    if (
+      seededBy !== BUILD_INFO.tag ||
+      (Number.isFinite(lastSeen) && Date.now() >= lastSeen + IDLE_TTL_MS)
+    ) {
+      // Caught inside: a blockConcurrencyWhile callback that throws resets the object.
+      await this.ctx.blockConcurrencyWhile(async () => {
+        try {
+          await this.wipe();
+          this.starting = undefined;
+        } catch (err) {
+          // Try again later rather than rely on the runtime's few retries, after which a
+          // sandbox would never expire.
+          // biome-ignore lint/suspicious/noConsole: the sandbox's only log line for this.
+          console.error("demo.wipe_failed", err);
+          await this.ctx.storage.setAlarm(Date.now() + WIPE_RETRY_MS);
+        }
+      });
+      return;
+    }
+    if (!Number.isFinite(lastSeen)) {
+      this.touch(); // a seeded sandbox always has an expiry
+    }
     await this.start();
     try {
       await this.sweep();
@@ -97,6 +171,71 @@ export class SandboxDO extends DurableObject<Env> {
     } finally {
       await this.armAlarm();
     }
+  }
+
+  /**
+   * Delete everything this sandbox holds: its uploads in R2 (not the shared seed images),
+   * its whole SQLite database, and its alarm. The next request starts it fresh.
+   */
+  private async wipe(): Promise<void> {
+    this.media.init();
+    await this.media.clear();
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+  }
+
+  /** "Reset demo": wipe the sandbox and seed it again, then back to the editor. */
+  private async reset(request: Request, url: URL): Promise<Response> {
+    if (request.method !== "POST") {
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { allow: "POST" } },
+      );
+    }
+    if (!isOwnWrite(request, url)) {
+      return Response.json(
+        { error: "cross_site_request", message: "a page on another site can't reset this demo" },
+        { status: 403 },
+      );
+    }
+    await this.ctx.blockConcurrencyWhile(() => this.wipe());
+    this.starting = undefined;
+    await this.start();
+    return new Response(null, { status: 303, headers: { location: "/dashboard/" } });
+  }
+
+  /** Record the visitor's activity, which pushes the idle expiry out (at most once a minute). */
+  private touch(): void {
+    const now = Date.now();
+    const seen = Number(this.meta("last_seen") ?? Number.NaN);
+    if (!Number.isFinite(seen) || now - seen >= TOUCH_EVERY_MS) {
+      this.setMeta("last_seen", String(now));
+    }
+  }
+
+  /** A value in the demo's own `demo_meta` table, or null (also before it exists). */
+  private meta(key: string): string | null {
+    const table = this.ctx.storage.sql
+      .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'demo_meta'")
+      .toArray();
+    if (table.length === 0) {
+      return null;
+    }
+    const row = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM demo_meta WHERE key = ?", key)
+      .toArray()[0];
+    return row?.value ?? null;
+  }
+
+  private setMeta(key: string, value: string): void {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS demo_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT",
+    );
+    this.ctx.storage.sql.exec(
+      "INSERT INTO demo_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+      key,
+      value,
+    );
   }
 
   /** Requests refused by the egress block in this isolate (src/egress.ts), for the tests. */
@@ -125,12 +264,14 @@ export class SandboxDO extends DurableObject<Env> {
 
   /**
    * When the sandbox next needs to wake, or null for never: the earliest of the sweep's
-   * next work, a tick from now while a send is in flight and the earliest scheduled send's
-   * fire time otherwise. Every reason to wake is a term here, so the one alarm always serves
+   * next work (a tick from now while a send is in flight, the earliest scheduled send's fire
+   * time) and the idle expiry (the TTL after the visitor's last request). Every reason to wake is a term here, so the one alarm always serves
    * the soonest. Reads Kestrel's `sends` table directly (read-only).
    */
   private nextWake(now: number): number | null {
     const sql = this.ctx.storage.sql;
+    const seen = Number(this.meta("last_seen") ?? Number.NaN);
+    const lastSeen = Number.isFinite(seen) ? seen : null;
     const sending = sql
       .exec<{ n: number }>("SELECT count(*) AS n FROM sends WHERE status = 'sending'")
       .one().n;
@@ -142,6 +283,7 @@ export class SandboxDO extends DurableObject<Env> {
     const times = [
       sending > 0 ? now + SWEEP_TICK_MS : null,
       firstDue !== null ? Math.max(firstDue, now + 1000) : null,
+      lastSeen !== null ? lastSeen + IDLE_TTL_MS : null,
     ].filter((t): t is number => t !== null);
     return times.length > 0 ? Math.min(...times) : null;
   }
@@ -160,7 +302,11 @@ export class SandboxDO extends DurableObject<Env> {
   }
 
   private async handle(request: Request): Promise<Response> {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (path === RESET_PATH) {
+      return this.reset(request, url);
+    }
     if (isUpload(request, path)) {
       const declared = Number(request.headers.get("content-length") ?? Number.NaN);
       if (!Number.isFinite(declared)) {
