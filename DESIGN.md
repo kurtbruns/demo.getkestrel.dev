@@ -44,7 +44,7 @@ The wrapper doesn't fork Kestrel's repo. It builds a pinned Kestrel release plus
 1. A request arrives at the demo Worker. Requests for Kestrel's static assets (`/dashboard/` and its CSS/JS, the favicon) are served from the Workers assets directory before the Worker runs. They are the same bytes for every visitor and carry no data. An asset path that reaches the Worker anyway (a file that doesn't exist) gets a plain 404 and never a session, as do `/health` and `robots.txt`.
 2. For anything else, the Worker reads the session cookie. With no valid cookie it creates a new session, subject to the per-IP rate limit (see "Lifecycle"), and sets the cookie on the response. Crawlers are kept away by `robots.txt` (`Disallow: /`) and `noindex`, so they don't mint sandboxes.
 3. The Worker derives the Durable Object id from the session and forwards the request to that DO.
-4. On its first request after it starts, the DO applies any of Kestrel's `migrations/` it hasn't yet and seeds Field Notes if its database isn't seeded for this Kestrel version, all inside `blockConcurrencyWhile`, so concurrent first requests seed once and none sees a half-seeded database. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response, adding `X-Robots-Tag: noindex` (#7).
+4. On its first request after it starts, the DO applies any of Kestrel's `migrations/` it hasn't yet and seeds Field Notes if its database isn't seeded for this Kestrel version, all inside `blockConcurrencyWhile`, so concurrent first requests seed once and none sees a half-seeded database. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response. The Worker makes it private and adds `X-Robots-Tag: noindex`, as it does for every response it sends, including its own errors.
 
 ### Session identity
 
@@ -52,18 +52,40 @@ The cookie (`__Host-kestrel_demo`) carries a random 256-bit session token and an
 
 Only a GET starts a session. The editor's first requests are GETs, while a cookieless write is another site's form posting here (a `SameSite=Lax` cookie isn't sent on a cross-site POST), and starting a session for it would replace the visitor's own. A cookieless POST, PUT, DELETE, HEAD or OPTIONS gets a 403 with no cookie and no sandbox. Two tabs opened at the same instant, before either has a cookie, get two sandboxes; the last cookie wins, and the other tab finds its sandbox gone on its next request. That's acceptable for a demo.
 
-Every sandbox response is private. Kestrel marks its public pages and media `public`, but in the demo every page is one visitor's own and the same URL names different content in different sandboxes. So the Worker rewrites `public` to `private`, adds `Vary: Cookie`, and sends `private, no-store` on a response that starts a session, since it carries the cookie. If a sandbox can't start (its migrate or seed throws), the Worker logs `demo.sandbox_failed` and answers a 503 asking the visitor to reload. It still hands over a new session's cookie, so the reload retries the same sandbox rather than starting another.
+Every sandbox response is private. Kestrel marks its public pages and media `public`, but in the demo every page is one visitor's own and the same URL names different content in different sandboxes. So the Worker rewrites `public` to `private` (and sets `private` where Kestrel sets nothing, as on its errors), adds `Vary: Cookie`, and sends `private, no-store` on a response that starts a session, since it carries the cookie. If a sandbox can't start (its migrate or seed throws), the Worker logs `demo.sandbox_failed` and answers a 503 asking the visitor to reload. It still hands over a new session's cookie, so the reload retries the same sandbox rather than starting another.
 
 ## The safety property
 
 **A visitor can only ever see their own sandbox.** Every request, including the public `/archive/*` pages, the landing page at `/`, and `/media/*`, is answered by the visitor's own Durable Object, chosen by their cookie and nothing else. So nobody can mint a demo.getkestrel.dev URL that shows anyone else their content. If someone writes an offensive post, publishes it, and shares the archive link, everyone who opens that link sees the pristine Field Notes sandbox their own cookie leads to (a fresh one, if they have none), and the post's slug simply 404s. The demo can't be used to host or distribute content.
 
-This is the main reason for the per-visitor design over a single shared demo instance, and it is tested explicitly (session A cannot read session B's posts, archive pages or media). Supporting measures:
+This is the main reason for the per-visitor design over a single shared demo instance. Supporting measures:
 
-- Every demo response carries `X-Robots-Tag: noindex`, and `robots.txt` disallows everything, so no sandbox's content is indexed.
+- Every demo response carries `X-Robots-Tag: noindex`: the Worker sets it on everything it answers, and `patches/0003-demo-noindex.patch` adds it to the static editor through Kestrel's `_headers`. `robots.txt` disallows everything, so no sandbox's content is indexed.
+- No shared cache can keep one sandbox's response for another: every sandbox response is `private` with `Vary: Cookie`, and one that starts a session is `no-store` ("Session identity").
 - Mail can't leave: `PROVIDER=fake` is fixed in the sandbox env, no `NOTIFY` binding is declared, and outbound `fetch` is refused inside the DO (see "Sends").
 - Visitor uploads are capped and scoped to the session's R2 prefix, and are served only through the session's own DO.
 - Sharing a cookie shares a sandbox. That is the visitor's own choice with their own browser state, not a link anyone can be handed.
+
+The tests that enforce it:
+
+- `test/isolation.spec.ts`, named for the property:
+  - a post A publishes is on A's public archive, and 404s at the same URL for B;
+  - it's absent from B's archive index, landing page and post list;
+  - it 404s for a visitor with no cookie (who gets a fresh sandbox);
+  - it 404s for a cookie that only resembles A's;
+  - every response class the Worker makes carries `noindex`, the 429 page included.
+- `test/build/assets-headers.test.mjs`: the built static assets' `_headers` marks every asset `noindex`.
+- `test/media.spec.ts`:
+  - an upload in A 404s in B at the same path;
+  - a replaced or removed logo stays in its own sandbox;
+  - media is served privately;
+  - keys can't escape a sandbox's prefix.
+- `test/sessions.spec.ts`:
+  - the same cookie reaches the same sandbox, and only its own;
+  - forged, tampered and junk cookies are new sessions, not a way in;
+  - a cookieless write starts no session;
+  - sandbox responses are private.
+- `test/sends.spec.ts`: a full send completes with no network egress, and any `fetch` in a sandbox is refused.
 
 ## Kestrel integration
 
@@ -99,7 +121,8 @@ Planned patches:
 | --- | --- | --- |
 | `0001-demo-auth` | `authenticate` (`src/auth/middleware.ts`) returns a demo principal for every request; `whoami` and the settings reflection report the auth mode as `demo`, and the client's types, curl snippet (no credential headers) and settings label accept it | #2 |
 | `0002-fake-outbox-bound` | keeps only the newest 500 messages in the fake transport's and the fake notifier's in-memory outboxes, and the newest 5,000 keys in the fake transport's idempotency map (dedup is best-effort: the window is shared by every sandbox in an isolate, and a missed dedup only adds a duplicate row to the fake outbox, never a second delivery record) | #6 |
-| demo chrome | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
+| `0003-demo-noindex` | adds a rule giving every static asset `X-Robots-Tag: noindex` to Kestrel's `public/_headers` (static assets are served before the Worker runs, so their headers come only from that file) | #7 |
+| `0004-demo-chrome` (planned) | the sandbox banner, the "Reset demo" button and a "Demo" identity chip, in the admin client and on the public pages | #9 |
 
 Why a patch set, over the two alternatives considered:
 

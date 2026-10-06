@@ -57,6 +57,50 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
 export const SAME_ORIGIN = { "content-type": "application/json", "sec-fetch-site": "same-origin" };
 
 /**
+ * Publish a new post in `v`'s sandbox the way the editor would (create, schedule at the
+ * minimum lead), then let its fire time pass and run the sandbox's sweep alarm, so it lands
+ * in that sandbox's public archive. Returns its slug.
+ */
+export async function publish(
+  v: Visitor,
+  post: { subject: string; slug: string; markdown: string },
+): Promise<string> {
+  const { runDurableObjectAlarm, runInDurableObject } = await import("cloudflare:test");
+  if (!v.cookie) {
+    await v.fetch("/posts"); // a session starts with a GET, as the editor's does
+  }
+  const created = await v.json<{ post: { id: string; slug: string } }>("/posts", {
+    method: "POST",
+    headers: SAME_ORIGIN,
+    body: JSON.stringify(post),
+  });
+  if (created.status !== 201) {
+    throw new Error(`create failed: ${created.status}`);
+  }
+  const scheduled = await v.json<{ send: { id: string } }>(
+    `/posts/${created.body.post.id}/schedule`,
+    {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ fire_at: Date.now() + 61_000 }),
+    },
+  );
+  if (scheduled.status !== 201) {
+    throw new Error(`schedule failed: ${scheduled.status}`);
+  }
+  const stub = await v.sandbox();
+  await runInDurableObject(stub, (_i, state) => {
+    state.storage.sql.exec(
+      "UPDATE sends SET fire_at = ? WHERE id = ?",
+      Date.now() - 1000,
+      scheduled.body.send.id,
+    );
+  });
+  await runDurableObjectAlarm(stub);
+  return created.body.post.slug;
+}
+
+/**
  * Start sessions from one IP until the new-session rate limit refuses one (at most 25
  * tries), returning every status and the refusal. The limiter counts in fixed one-minute
  * windows, so a burst that straddles a window's end gets a fresh allowance partway; 25 is

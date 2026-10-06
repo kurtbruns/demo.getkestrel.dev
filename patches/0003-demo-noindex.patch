@@ -1,0 +1,23 @@
+Demo noindex (kurtbruns/demo.getkestrel.dev#7)
+
+What: public/_headers gains a rule giving every static asset `X-Robots-Tag: noindex`.
+
+Why: no page of the demo should be indexed (DESIGN.md, "The safety property"). The demo
+Worker adds the header to every response it makes, but Workers static assets (the
+/dashboard editor shell, the favicon) are served before the Worker runs, so their headers
+come only from this file.
+
+diff --git a/public/_headers b/public/_headers
+index 0210cb8..b618d21 100644
+--- a/public/_headers
++++ b/public/_headers
+@@ -28,3 +28,9 @@
+ /dashboard/*
+   X-Frame-Options: DENY
+   Content-Security-Policy: frame-ancestors 'none'
++
++# Demo sandbox (patched by demo.getkestrel.dev): nothing the demo serves is indexed. The
++# demo Worker sends the same header on every response it makes; this covers the static
++# editor, which the Worker never sees.
++/*
++  X-Robots-Tag: noindex
