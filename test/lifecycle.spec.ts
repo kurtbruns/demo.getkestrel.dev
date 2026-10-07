@@ -18,16 +18,16 @@ interface PostList {
 
 /** Edit a seeded draft's subject and upload an image, so there's something to lose. */
 async function makeChanges(v: Visitor): Promise<void> {
-  const { body } = await v.json<PostList>("/posts?status=draft");
+  const { body } = await v.json<PostList>("/api/posts?status=draft");
   const draft = body.posts[0]?.id;
   expect(draft).toBeDefined();
-  const saved = await v.fetch(`/posts/${draft}`, {
+  const saved = await v.fetch(`/api/posts/${draft}`, {
     method: "PUT",
     headers: SAME_ORIGIN,
     body: JSON.stringify({ subject: EDITED }),
   });
   expect(saved.status).toBe(200);
-  const uploaded = await v.fetch(`/posts/${draft}/images?filename=mine.png`, {
+  const uploaded = await v.fetch(`/api/posts/${draft}/images?filename=mine.png`, {
     method: "POST",
     headers: { ...SAME_ORIGIN, "content-type": "image/png" },
     body: new Uint8Array([1, 2, 3]),
@@ -36,7 +36,7 @@ async function makeChanges(v: Visitor): Promise<void> {
 }
 
 async function subjects(v: Visitor): Promise<string[]> {
-  const { body } = await v.json<PostList>("/posts?status=draft");
+  const { body } = await v.json<PostList>("/api/posts?status=draft");
   return body.posts.map((p) => p.subject);
 }
 
@@ -92,12 +92,12 @@ describe("the idle TTL", () => {
     // The same cookie gets a fresh sandbox: the seed again, and none of the changes.
     expect(await subjects(v)).not.toContain(EDITED);
     expect(await seedCount(stub)).toBe(1);
-    expect((await v.fetch("/posts?status=draft")).status).toBe(200);
+    expect((await v.fetch("/api/posts?status=draft")).status).toBe(200);
   });
 
   it("is pushed out by every request", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const stub = await v.sandbox();
     const old = Date.now() - 60 * 60 * 1000;
     await runInDurableObject(stub, async (_i, state) => {
@@ -105,7 +105,7 @@ describe("the idle TTL", () => {
       await state.storage.setAlarm(old + IDLE_TTL_MS);
     });
     const before = Date.now();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const alarm = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
     expect(alarm).toBeGreaterThanOrEqual(before + IDLE_TTL_MS);
   });
@@ -177,7 +177,7 @@ describe("a sandbox seeded by another Kestrel release", () => {
 
     const v = visitor();
     v.cookie = `${SESSION_COOKIE}=${value}`;
-    const { body } = await v.json<PostList>("/posts");
+    const { body } = await v.json<PostList>("/api/posts");
     expect(body.posts.map((p) => p.subject)).not.toContain(EDITED);
     expect(body.posts.map((p) => p.subject)).toContain("Try editing this draft");
     expect(await ownObjects(stub)).toBe(0);
@@ -188,7 +188,7 @@ describe("a sandbox seeded by another Kestrel release", () => {
 describe("the alarm", () => {
   it("wipes a sandbox seeded by another release, and never seeds it", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const stub = await v.sandbox();
     await runInDurableObject(stub, async (_i, state) => {
       state.storage.sql.exec(
@@ -245,7 +245,7 @@ describe("Reset demo, from outside", () => {
 
   it("shares the new-session rate limit", async () => {
     const v = visitor("203.0.113.77");
-    await v.fetch("/posts"); // one new session from this IP
+    await v.fetch("/api/posts"); // one new session from this IP
     const statuses: number[] = [];
     for (let i = 0; i < 25 && !statuses.includes(429); i++) {
       const res = await v.fetch(RESET_PATH, {

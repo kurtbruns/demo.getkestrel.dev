@@ -46,7 +46,7 @@ function isOwnWrite(request: Request, url: URL): boolean {
 function isUpload(request: Request, path: string): boolean {
   return (
     request.method === "POST" &&
-    (path === "/api/settings/logo" || /^\/posts\/[^/]+\/images$/.test(path))
+    (path === "/api/settings/logo" || /^\/api\/posts\/[^/]+\/images$/.test(path))
   );
 }
 

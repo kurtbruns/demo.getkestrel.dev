@@ -67,9 +67,9 @@ export async function publish(
 ): Promise<string> {
   const { runDurableObjectAlarm, runInDurableObject } = await import("cloudflare:test");
   if (!v.cookie) {
-    await v.fetch("/posts"); // a session starts with a GET, as the editor's does
+    await v.fetch("/api/posts"); // a session starts with a GET, as the editor's does
   }
-  const created = await v.json<{ post: { id: string; slug: string } }>("/posts", {
+  const created = await v.json<{ post: { id: string; slug: string } }>("/api/posts", {
     method: "POST",
     headers: SAME_ORIGIN,
     body: JSON.stringify(post),
@@ -78,7 +78,7 @@ export async function publish(
     throw new Error(`create failed: ${created.status}`);
   }
   const scheduled = await v.json<{ send: { id: string } }>(
-    `/posts/${created.body.post.id}/schedule`,
+    `/api/posts/${created.body.post.id}/schedule`,
     {
       method: "POST",
       headers: SAME_ORIGIN,

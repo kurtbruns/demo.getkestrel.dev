@@ -139,7 +139,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### The D1-compatible adapter
 
-`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.2.0:
+`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.3.0:
 
 - `prepare(sql)` (about 143 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (23 sites, in `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `send/schedule`, `send/remake`, `send/budget`).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
@@ -194,12 +194,12 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 
 ### Module-level state in Kestrel
 
-DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.2.0 that is:
+DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.3.0 that is:
 
 - `providers/fake.ts`: the in-memory `outbox` of every message "sent" and the idempotency `sentKeys` map. Both grow without bound in a long-lived isolate.
 - `notify/fake.ts`: the notifications outbox, which grows the same way.
 - `providers/simulate.ts`: the simulation's maps (inert here, since the simulation only engages when dev-shaped).
-- `index.ts`'s router cache and `auth/access.ts`'s JWKS cache, which hold config, not visitor data.
+- `index.ts`'s router cache, `auth/access.ts`'s JWKS cache, and `docs/index.ts`'s set of the bundled guide's page slugs, which hold config, not visitor data.
 
 None of this is reachable over HTTP outside dev mode (the outbox is read only by `/api/dev/outbox`), so it is not a cross-sandbox read, but the outboxes are an unbounded memory leak. The fake transport's idempotency map also ignores which sandbox a key came from, though keys embed per-sandbox send ids, so they can't collide. The `0002-fake-outbox-bound` patch caps the two outboxes and the idempotency map at a fixed size, keeping the newest entries. (Briefly filed upstream as kurtbruns/kestrel#470 and closed: only the demo runs the fake transport in a long-lived production isolate.)
 

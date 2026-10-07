@@ -28,7 +28,7 @@ async function seedCount(stub: DurableObjectStub): Promise<number> {
 describe("a first visit", () => {
   it("gets a signed session cookie and a seeded sandbox", async () => {
     const v = visitor();
-    const res = await v.fetch("/posts");
+    const res = await v.fetch("/api/posts");
     expect(res.status).toBe(200);
     const set = res.headers.get("set-cookie") ?? "";
     expect(set).toMatch(new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43}\\.[A-Za-z0-9_-]{43};`));
@@ -43,8 +43,8 @@ describe("a first visit", () => {
 
   it("doesn't set a cookie on a later request with it", async () => {
     const v = visitor();
-    await v.fetch("/posts");
-    const again = await v.fetch("/posts");
+    await v.fetch("/api/posts");
+    const again = await v.fetch("/api/posts");
     expect(again.status).toBe(200);
     expect(again.headers.get("set-cookie")).toBeNull();
   });
@@ -54,17 +54,17 @@ describe("a session", () => {
   it("reaches the same sandbox every time, and only its own", async () => {
     const a = visitor();
     const b = visitor();
-    await a.fetch("/posts"); // a session starts with a GET, as the editor's does
-    await b.fetch("/posts");
-    const created = await a.fetch("/posts", {
+    await a.fetch("/api/posts"); // a session starts with a GET, as the editor's does
+    await b.fetch("/api/posts");
+    const created = await a.fetch("/api/posts", {
       method: "POST",
       headers: SAME_ORIGIN,
       body: JSON.stringify({ subject: "Only in A's sandbox" }),
     });
     expect(created.status).toBe(201);
-    const listed = await a.json<PostList>("/posts?status=draft");
+    const listed = await a.json<PostList>("/api/posts?status=draft");
     expect(listed.body.posts.map((p) => p.subject)).toContain("Only in A's sandbox");
-    const other = await b.json<PostList>("/posts?status=draft");
+    const other = await b.json<PostList>("/api/posts?status=draft");
     expect(other.body.posts.map((p) => p.subject)).not.toContain("Only in A's sandbox");
   });
 
@@ -72,7 +72,7 @@ describe("a session", () => {
     const { token, value } = await mintSession(SECRET);
     const cookie = `${SESSION_COOKIE}=${value}`;
     const responses = await Promise.all(
-      Array.from({ length: 6 }, () => SELF.fetch(`${BASE}/posts`, { headers: { cookie } })),
+      Array.from({ length: 6 }, () => SELF.fetch(`${BASE}/api/posts`, { headers: { cookie } })),
     );
     for (const res of responses) {
       expect(res.status).toBe(200);
@@ -92,7 +92,7 @@ describe("a session", () => {
     const stub = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(SECRET, token)));
     const totals = await runInDurableObject(stub, async (instance) => {
       const responses = await Promise.all(
-        Array.from({ length: 6 }, () => instance.fetch(new Request(`${BASE}/posts`))),
+        Array.from({ length: 6 }, () => instance.fetch(new Request(`${BASE}/api/posts`))),
       );
       return Promise.all(responses.map(async (r) => ((await r.json()) as PostList).page.total));
     });
@@ -104,13 +104,13 @@ describe("a session", () => {
 
   it("isn't honored when forged or tampered with: that's a new session", async () => {
     const real = visitor();
-    await real.fetch("/posts");
+    await real.fetch("/api/posts");
     const [name, value] = (real.cookie ?? "").split("=");
     const [token, sig] = (value ?? "").split(".");
     const tampered = `${name}=${token}.${sig?.startsWith("A") ? "B" : "A"}${sig?.slice(1)}`;
     const forged = `${name}=${"a".repeat(43)}.${"b".repeat(43)}`;
     for (const cookie of [tampered, forged, `${name}=garbage`]) {
-      const res = await SELF.fetch(`${BASE}/posts`, {
+      const res = await SELF.fetch(`${BASE}/api/posts`, {
         headers: { cookie, "cf-connecting-ip": "192.0.2.77" },
       });
       expect(res.status).toBe(200);
@@ -133,7 +133,7 @@ describe("the new-session rate limit", () => {
 
   it("doesn't count a returning visitor", async () => {
     const v = visitor("203.0.113.10");
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     for (let i = 0; i < 12; i++) {
       expect((await v.fetch("/api/whoami")).status).toBe(200);
     }
@@ -167,8 +167,8 @@ describe("paths that need no sandbox", () => {
 describe("hardening", () => {
   it("finds the valid cookie among several of the same name", async () => {
     const v = visitor();
-    await v.fetch("/posts");
-    const res = await SELF.fetch(`${BASE}/posts`, {
+    await v.fetch("/api/posts");
+    const res = await SELF.fetch(`${BASE}/api/posts`, {
       headers: { cookie: `${SESSION_COOKIE}=junk; ${v.cookie}; ${SESSION_COOKIE}=more-junk` },
     });
     expect(res.status).toBe(200);
@@ -178,7 +178,7 @@ describe("hardening", () => {
 
   it("starts no session for a cookieless write, HEAD or OPTIONS", async () => {
     for (const method of ["POST", "PUT", "DELETE", "HEAD", "OPTIONS"]) {
-      const res = await SELF.fetch(`${BASE}/posts`, {
+      const res = await SELF.fetch(`${BASE}/api/posts`, {
         method,
         headers: { "cf-connecting-ip": "198.51.100.150" },
       });
@@ -229,7 +229,7 @@ describe("hardening", () => {
       state.storage.sql.exec("CREATE TABLE demo_migrations (unexpected INTEGER)");
     });
     const cookie = `${SESSION_COOKIE}=${value}`;
-    const broken = await SELF.fetch(`${BASE}/posts`, { headers: { cookie } });
+    const broken = await SELF.fetch(`${BASE}/api/posts`, { headers: { cookie } });
     expect(broken.status).toBe(503);
     expect(broken.headers.get("x-robots-tag")).toBe("noindex");
     expect(((await broken.json()) as { error: string }).error).toBe("sandbox_unavailable");
@@ -241,7 +241,7 @@ describe("hardening", () => {
     await runInDurableObject(stub, fix).catch(() =>
       runInDurableObject(env.SANDBOX.get(env.SANDBOX.idFromName(name)), fix),
     );
-    const fixed = await SELF.fetch(`${BASE}/posts`, { headers: { cookie } });
+    const fixed = await SELF.fetch(`${BASE}/api/posts`, { headers: { cookie } });
     expect(fixed.status).toBe(200);
     await fixed.arrayBuffer();
   });

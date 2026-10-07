@@ -17,7 +17,7 @@ interface SendView {
 }
 
 async function draftId(v: Visitor): Promise<string> {
-  const { body } = await v.json<{ posts: { id: string }[] }>("/posts?status=draft");
+  const { body } = await v.json<{ posts: { id: string }[] }>("/api/posts?status=draft");
   const id = body.posts[0]?.id;
   if (!id) {
     throw new Error("no draft");
@@ -40,7 +40,7 @@ async function expiresAt(v: Visitor): Promise<number> {
 }
 
 async function scheduledSends(v: Visitor): Promise<SendView[]> {
-  const { body } = await v.json<{ sends: SendView[] }>("/sends?status=scheduled");
+  const { body } = await v.json<{ sends: SendView[] }>("/api/sends?status=scheduled");
   return body.sends;
 }
 
@@ -58,7 +58,7 @@ describe("the sweep alarm", () => {
     const v = visitor();
     for (const send of await scheduledSends(v)) {
       // No body, so no content type: a cancel declares none.
-      const res = await v.fetch(`/sends/${send.id}/cancel`, {
+      const res = await v.fetch(`/api/sends/${send.id}/cancel`, {
         method: "POST",
         headers: { "sec-fetch-site": "same-origin" },
       });
@@ -72,11 +72,11 @@ describe("the sweep alarm", () => {
 describe("a scheduled send", () => {
   it("goes out through the fake transport when its alarm fires, with no network egress", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const stub = await v.sandbox();
     const refusedBefore = await runInDurableObject(stub, (i) => i.egressRefused());
     const post = await draftId(v);
-    const scheduled = await v.fetch(`/posts/${post}/schedule`, {
+    const scheduled = await v.fetch(`/api/posts/${post}/schedule`, {
       method: "POST",
       headers: SAME_ORIGIN,
       body: JSON.stringify({ fire_at: Date.now() + 61_000 }),
@@ -99,7 +99,7 @@ describe("a scheduled send", () => {
     // The alarm armed for the original fire time runs now.
     expect(await runDurableObjectAlarm(stub)).toBe(true);
 
-    const after = await v.json<{ send: SendView & { status: string } }>(`/sends/${send.id}`);
+    const after = await v.json<{ send: SendView & { status: string } }>(`/api/sends/${send.id}`);
     expect(after.status).toBe(200);
     expect(after.body.send.status).toBe("sent");
     const accepted = await runInDurableObject(
@@ -125,7 +125,7 @@ describe("a scheduled send", () => {
 describe("network egress", () => {
   it("is refused for any fetch inside a sandbox", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     await runInDurableObject(await v.sandbox(), async (instance) => {
       const before = instance.egressRefused();
       await expect(fetch("https://example.com/")).rejects.toThrow(
@@ -143,7 +143,7 @@ describe("network egress", () => {
     // and the subscribe URL. In a sandbox the active provider is always the fake, whose
     // parseWebhook makes no request; the egress block is the backstop if that ever changed.
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const stub = await v.sandbox();
     const before = await runInDurableObject(stub, (i) => i.egressRefused());
     const res = await v.fetch("/webhooks/ses", {
@@ -232,10 +232,10 @@ describe("the fake transport's memory (patches/0002-fake-outbox-bound.patch)", (
 describe("the alarm while a send is in flight", () => {
   it("is a tick away, even with a scheduled send due later", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const stub = await v.sandbox();
     const post = await draftId(v);
-    const scheduled = await v.fetch(`/posts/${post}/schedule`, {
+    const scheduled = await v.fetch(`/api/posts/${post}/schedule`, {
       method: "POST",
       headers: SAME_ORIGIN,
       body: JSON.stringify({ fire_at: Date.now() + 61_000 }),
@@ -250,7 +250,7 @@ describe("the alarm while a send is in flight", () => {
       );
     });
     const before = Date.now();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const alarm = (await alarmAt(v)) ?? 0;
     expect(alarm).toBeGreaterThanOrEqual(before + 59_000);
     expect(alarm).toBeLessThanOrEqual(Date.now() + 61_000);
@@ -259,14 +259,14 @@ describe("the alarm while a send is in flight", () => {
   it("falls back to the idle expiry after the last send goes out", async () => {
     const v = visitor();
     for (const send of await scheduledSends(v)) {
-      await v.fetch(`/sends/${send.id}/cancel`, {
+      await v.fetch(`/api/sends/${send.id}/cancel`, {
         method: "POST",
         headers: { "sec-fetch-site": "same-origin" },
       });
     }
     const stub = await v.sandbox();
     const post = await draftId(v);
-    const scheduled = await v.fetch(`/posts/${post}/schedule`, {
+    const scheduled = await v.fetch(`/api/posts/${post}/schedule`, {
       method: "POST",
       headers: SAME_ORIGIN,
       body: JSON.stringify({ fire_at: Date.now() + 61_000 }),
@@ -280,7 +280,9 @@ describe("the alarm while a send is in flight", () => {
       );
     });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
-    expect((await v.json<{ send: SendView }>(`/sends/${send.id}`)).body.send.status).toBe("sent");
+    expect((await v.json<{ send: SendView }>(`/api/sends/${send.id}`)).body.send.status).toBe(
+      "sent",
+    );
     expect(await alarmAt(v)).toBe(await expiresAt(v));
   });
 });

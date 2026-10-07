@@ -25,7 +25,7 @@ describe("a post published in one sandbox", () => {
       slug: MARKER,
       markdown: `# Only in A\n\nThe body says ${MARKER}.`,
     });
-    await b.fetch("/posts"); // B has a sandbox of its own
+    await b.fetch("/api/posts"); // B has a sandbox of its own
   });
 
   it("is on its own sandbox's public archive", async () => {
@@ -47,8 +47,8 @@ describe("a post published in one sandbox", () => {
       "/archive/",
       "/",
       "/subscribe",
-      "/posts",
-      "/posts?status=sent",
+      "/api/posts",
+      "/api/posts?status=sent",
     ]) {
       const own = await a.fetch(path);
       expect(own.status, `A ${path}`).toBe(200);
@@ -110,11 +110,11 @@ describe("a post published in one sandbox", () => {
 describe("noindex", () => {
   it("is on every response class the Worker makes", async () => {
     const v = visitor();
-    const sent = await v.json<{ posts: { slug: string }[] }>("/posts?status=sent");
+    const sent = await v.json<{ posts: { slug: string }[] }>("/api/posts?status=sent");
     const seededSlug = sent.body.posts[0]?.slug;
     expect(seededSlug).toBeDefined();
     const paths = [
-      "/posts", // API JSON, from a sandbox
+      "/api/posts", // API JSON, from a sandbox
       `/archive/${seededSlug}`, // a public HTML page
       "/media/posts/5eed0001-0000-4000-8000-000000000001/kestrel.webp", // media
       "/no-such-page", // Kestrel's 404

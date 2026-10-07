@@ -16,7 +16,7 @@ const PILL = 'class="r-demo"';
 describe("the public pages", () => {
   it("carry the demo pill, opening the dashboard, and no form to the reset", async () => {
     const v = visitor();
-    const { body } = await v.json<{ posts: { slug: string }[] }>("/posts?status=sent");
+    const { body } = await v.json<{ posts: { slug: string }[] }>("/api/posts?status=sent");
     const slug = body.posts[0]?.slug;
     expect(slug).toBeDefined();
     const pages = [
@@ -47,8 +47,8 @@ describe("the public pages", () => {
 
   it("don't carry it into the email: not the preview, the frozen send, or what was sent", async () => {
     const v = visitor();
-    const { body } = await v.json<{ posts: { id: string }[] }>("/posts?status=draft");
-    const preview = await v.fetch(`/posts/${body.posts[0]?.id}/preview`);
+    const { body } = await v.json<{ posts: { id: string }[] }>("/api/posts?status=draft");
+    const preview = await v.fetch(`/api/posts/${body.posts[0]?.id}/preview`);
     expect(preview.status).toBe(200);
     const html = await preview.text();
     expect(html).not.toContain(PILL);
@@ -74,7 +74,7 @@ describe("the public pages", () => {
 
   it("leave Kestrel's JSON API as it was", async () => {
     const v = visitor();
-    const res = await v.fetch("/posts");
+    const res = await v.fetch("/api/posts");
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(await res.text()).not.toContain(PILL);
   });
@@ -83,7 +83,7 @@ describe("the public pages", () => {
 describe("the reset route", () => {
   it("answers a GET with the dashboard, where the reset step lives", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const res = await v.fetch(RESET_PATH, { redirect: "manual" });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/dashboard/");
@@ -103,7 +103,7 @@ describe("the reset route", () => {
 
   it("takes what the dashboard's form posts: a same-origin form submit, answered with the editor", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     const res = await v.fetch(RESET_PATH, {
       method: "POST",
       headers: {
