@@ -23,7 +23,9 @@ describe("Kestrel in a sandbox", () => {
   const me = visitor();
 
   it("seeds Field Notes on first use and lists its posts with no credentials", async () => {
-    const { status, body } = await me.json<{ posts: PostRow[]; page: { total: number } }>("/posts");
+    const { status, body } = await me.json<{ posts: PostRow[]; page: { total: number } }>(
+      "/api/posts",
+    );
     expect(status).toBe(200);
     expect(body.page.total).toBeGreaterThanOrEqual(7);
     const statuses = new Set(body.posts.map((p) => p.status));
@@ -47,7 +49,7 @@ describe("Kestrel in a sandbox", () => {
   });
 
   it("still refuses a cross-site admin write", async () => {
-    const res = await me.fetch("/posts", {
+    const res = await me.fetch("/api/posts", {
       method: "POST",
       headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" },
       body: JSON.stringify({ subject: "From elsewhere" }),
@@ -56,7 +58,7 @@ describe("Kestrel in a sandbox", () => {
   });
 
   it("serves a seeded post's archive page, its cover image and the logo", async () => {
-    const { body } = await me.json<{ posts: PostRow[] }>("/posts?status=sent");
+    const { body } = await me.json<{ posts: PostRow[] }>("/api/posts?status=sent");
     const srcs = new Set<string>();
     for (const post of body.posts) {
       const page = await me.fetch(`/archive/${post.slug}`);
@@ -108,16 +110,16 @@ describe("Kestrel in a sandbox", () => {
   });
 
   it("saves a same-origin draft edit, which persists", async () => {
-    const { body } = await me.json<{ posts: PostRow[] }>("/posts?status=draft");
+    const { body } = await me.json<{ posts: PostRow[] }>("/api/posts?status=draft");
     const draft = body.posts[0];
     expect(draft).toBeDefined();
-    const saved = await me.fetch(`/posts/${draft?.id}`, {
+    const saved = await me.fetch(`/api/posts/${draft?.id}`, {
       method: "PUT",
       headers: SAME_ORIGIN,
       body: JSON.stringify({ subject: "Edited in the sandbox" }),
     });
     expect(saved.status).toBe(200);
-    const reread = await me.json<{ posts: PostRow[] }>("/posts?status=draft");
+    const reread = await me.json<{ posts: PostRow[] }>("/api/posts?status=draft");
     expect(reread.body.posts.map((p) => p.subject)).toContain("Edited in the sandbox");
   });
 

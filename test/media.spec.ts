@@ -26,7 +26,7 @@ async function bytesOf(res: Response): Promise<number[]> {
 
 /** Upload `bytes` as a post image in `v`'s sandbox, raw, as the editor can. */
 function upload(v: Visitor, postId: string, filename: string, bytes: Uint8Array) {
-  return v.fetch(`/posts/${postId}/images?filename=${filename}`, {
+  return v.fetch(`/api/posts/${postId}/images?filename=${filename}`, {
     method: "POST",
     headers: { ...SAME_ORIGIN, "content-type": "image/png" },
     body: bytes,
@@ -34,7 +34,7 @@ function upload(v: Visitor, postId: string, filename: string, bytes: Uint8Array)
 }
 
 async function aDraft(v: Visitor): Promise<string> {
-  const { body } = await v.json<PostList>("/posts?status=draft");
+  const { body } = await v.json<PostList>("/api/posts?status=draft");
   const id = body.posts[0]?.id;
   if (!id) {
     throw new Error("no draft");
@@ -63,7 +63,7 @@ describe("seed images", () => {
 
   it("are served privately, never for a shared cache", async () => {
     const v = visitor();
-    await v.fetch("/posts"); // the first response, which sets the cookie, is no-store
+    await v.fetch("/api/posts"); // the first response, which sets the cookie, is no-store
     const res = await v.fetch(COVER);
     expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(res.headers.get("vary")).toContain("Cookie");
@@ -102,7 +102,7 @@ describe("uploads", () => {
       await (async () => {
         const v = visitor();
         await v.fetch("/health"); // no session; mint one with a real request
-        await v.fetch("/posts");
+        await v.fetch("/api/posts");
         return v.sandbox();
       })(),
       async (_instance, state) => {
@@ -138,7 +138,7 @@ describe("uploads", () => {
 
   it("can't name a key or list outside the sandbox", async () => {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     await runInDurableObject(await v.sandbox(), async (instance) => {
       for (const key of ["../other/x", "/abs", "a//b", "", "a/./b"]) {
         // Kestrel's own HttpError, so its router answers a 4xx, never a 500.
@@ -157,7 +157,7 @@ describe("hardening", () => {
   /** A media wrapper over a scratch prefix with small caps, inside a real sandbox DO. */
   async function scratchMedia<T>(fn: (media: SandboxMedia) => Promise<T>): Promise<T> {
     const v = visitor();
-    await v.fetch("/posts");
+    await v.fetch("/api/posts");
     return runInDurableObject(await v.sandbox(), (_i, state) =>
       fn(
         new SandboxMedia(
@@ -215,7 +215,7 @@ describe("hardening", () => {
     const big = await upload(v, draft, "big.png", new Uint8Array(MAX_OBJECT_BYTES + 300 * 1024));
     expect(big.status).toBe(413);
     expect(((await big.json()) as { error: string }).error).toBe("upload_too_large");
-    const unsized = await v.fetch(`/posts/${draft}/images?filename=s.png`, {
+    const unsized = await v.fetch(`/api/posts/${draft}/images?filename=s.png`, {
       method: "POST",
       headers: { ...SAME_ORIGIN, "content-type": "image/png" },
       body: new ReadableStream({
@@ -283,7 +283,7 @@ describe("the logo", () => {
   it("replaced in one sandbox stays the seed's in another", async () => {
     const a = visitor();
     const b = visitor();
-    await a.fetch("/posts"); // a session starts with a GET
+    await a.fetch("/api/posts"); // a session starts with a GET
     const seedLogo = await bytesOf(await b.fetch("/media/branding/logo"));
     const mine = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9]);
     expect((await postLogo(a, mine)).status).toBe(200);
