@@ -1,6 +1,6 @@
 # Design: the per-visitor Kestrel sandbox
 
-demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0; the file and line references below are to that tag.
+demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.4.0; the file references below hold at that tag.
 
 ## Goals and non-goals
 
@@ -139,7 +139,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### The D1-compatible adapter
 
-`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.3.0:
+`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.4.0:
 
 - `prepare(sql)` (about 143 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (23 sites, in `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `send/schedule`, `send/remake`, `send/budget`).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
@@ -194,7 +194,7 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 
 ### Module-level state in Kestrel
 
-DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.3.0 that is:
+DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.4.0 that is:
 
 - `providers/fake.ts`: the in-memory `outbox` of every message "sent" and the idempotency `sentKeys` map. Both grow without bound in a long-lived isolate.
 - `notify/fake.ts`: the notifications outbox, which grows the same way.
