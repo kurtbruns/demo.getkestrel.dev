@@ -10,7 +10,7 @@ import { BUILD_INFO } from "kestrel";
 import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import type { SandboxDO } from "../src/sandbox_do";
-import { SAME_ORIGIN, visitor } from "./support";
+import { savePost, visitor } from "./support";
 
 interface PostRow {
   id: string;
@@ -55,6 +55,22 @@ describe("Kestrel in a sandbox", () => {
       body: JSON.stringify({ subject: "From elsewhere" }),
     });
     expect(res.status).toBe(403);
+  });
+
+  it("shows the demo pill on the reader pages as served, never in Settings' previews of them", async () => {
+    for (const path of ["/", "/subscribe", "/archive/nope", "/unsubscribe?test=1"]) {
+      expect(await (await me.fetch(path)).text(), path).toContain('class="r-demo"');
+    }
+    for (const page of [
+      "subscribe/form",
+      "confirm/ready",
+      "unsubscribe/ask",
+      "reading/not-found",
+    ]) {
+      const res = await me.fetch(`/api/reader-pages/${page}`);
+      expect(res.status).toBe(200);
+      expect(await res.text(), page).not.toContain("r-demo");
+    }
   });
 
   it("serves a seeded post's archive page, its cover image and the logo", async () => {
@@ -113,11 +129,7 @@ describe("Kestrel in a sandbox", () => {
     const { body } = await me.json<{ posts: PostRow[] }>("/api/posts?status=draft");
     const draft = body.posts[0];
     expect(draft).toBeDefined();
-    const saved = await me.fetch(`/api/posts/${draft?.id}`, {
-      method: "PUT",
-      headers: SAME_ORIGIN,
-      body: JSON.stringify({ subject: "Edited in the sandbox" }),
-    });
+    const saved = await savePost(me, draft?.id ?? "", { subject: "Edited in the sandbox" });
     expect(saved.status).toBe(200);
     const reread = await me.json<{ posts: PostRow[] }>("/api/posts?status=draft");
     expect(reread.body.posts.map((p) => p.subject)).toContain("Edited in the sandbox");

@@ -38,11 +38,11 @@ index c013081..37975eb 100644
    return mode === "access"
      ? [
          '-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"',
-diff --git a/client/settings/settings.ts b/client/settings/settings.ts
-index 2940489..e912ccf 100644
---- a/client/settings/settings.ts
-+++ b/client/settings/settings.ts
-@@ -432,7 +432,7 @@ export async function renderSettings(root: HTMLElement, signal: AbortSignal): Pr
+diff --git a/client/settings/deploy.ts b/client/settings/deploy.ts
+index c878e1d..7041ba4 100644
+--- a/client/settings/deploy.ts
++++ b/client/settings/deploy.ts
+@@ -74,7 +74,7 @@ export function instanceSection(page: SettingsPage): Html {
            <div class="set-kv-k">App origin</div><div class="set-kv-v"><span class="mono">${d.appOrigin}</span></div>
            <div class="set-kv-k">Archive URL base</div><div class="set-kv-v"><span class="mono">${archiveBase}</span>${archiveIsDefault ? html`<span class="set-pill">default: app origin</span>` : null}</div>
            <div class="set-kv-k">Image URL base</div><div class="set-kv-v"><span class="mono">${d.mediaPublicBase}</span></div>
@@ -78,10 +78,10 @@ index 3fcedd0..ebec987 100644
    /** How notifications reach the publisher: Cloudflare's own email, the newsletter's provider, or the dev fake that delivers nothing. */
    notifyChannel: "cloudflare" | "provider" | "fake";
 diff --git a/src/app.ts b/src/app.ts
-index 8c5eb4a..c2a4611 100644
+index f36de6d..5fe41b6 100644
 --- a/src/app.ts
 +++ b/src/app.ts
-@@ -170,11 +170,11 @@ export function createRouter({
+@@ -171,11 +171,11 @@ export function createRouter({
        path: "/api/whoami",
        access: "admin",
        resource: "system",
@@ -148,10 +148,10 @@ index 8fb98d6..72d714f 100644
  
  /** Route middleware: require a valid principal or 401. */
 diff --git a/src/routes/settings.ts b/src/routes/settings.ts
-index c838230..a4e454f 100644
+index 164b940..70bbbe4 100644
 --- a/src/routes/settings.ts
 +++ b/src/routes/settings.ts
-@@ -79,7 +79,7 @@ function deploymentView(cfg: Config): DeploymentView {
+@@ -80,7 +80,7 @@ function deploymentView(cfg: Config): DeploymentView {
      awsRegion: cfg.awsRegion,
      // Booleans only — never the values.
      accessConfigured: Boolean(cfg.accessTeamDomain && cfg.accessAud),

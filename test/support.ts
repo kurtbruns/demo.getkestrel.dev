@@ -120,3 +120,18 @@ export async function exhaustNewSessions(
   }
   return { statuses, refused: undefined };
 }
+
+/** Save `fields` to post `id` as the editor does, naming the revision it read (Kestrel
+ *  refuses a save without one, 428 `base_required`, since v1.5.0). */
+export async function savePost(
+  v: Visitor,
+  id: string,
+  fields: Record<string, unknown>,
+): Promise<Response> {
+  const { body } = await v.json<{ post: { current_revision: string } }>(`/api/posts/${id}`);
+  return v.fetch(`/api/posts/${id}`, {
+    method: "PUT",
+    headers: SAME_ORIGIN,
+    body: JSON.stringify({ ...fields, base_revision: body.post.current_revision }),
+  });
+}

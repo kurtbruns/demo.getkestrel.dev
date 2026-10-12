@@ -7,8 +7,10 @@
  * every sandbox shares, `seed/<kestrel tag>/`, once, and a sandbox's read of a key it doesn't
  * hold falls back there, so a new sandbox writes no image bytes. Only the seed is ever handed
  * that view; the bucket Kestrel's request handlers see can never write to the shared prefix.
- * Deleting a key leaves a tombstone, so a deleted seed image (a removed logo, a deleted
- * post's cover) stays deleted for that sandbox.
+ * The seed's logo key is the one exception to deterministic seed keys: Kestrel names each logo
+ * upload anew (`branding/logo/<time>-<random>`), so the seed view stores it once at a fixed
+ * shared name and records the sandbox's key as an alias of it. Deleting a key leaves a
+ * tombstone, so a deleted seed image (a deleted post's cover) stays deleted for that sandbox.
  *
  * Uploads are capped per object and per sandbox, with the byte count and tombstones kept in
  * the sandbox's own SQLite. Over a cap, `put` throws Kestrel's own `HttpError(413)`, which
@@ -21,6 +23,11 @@
  */
 
 import { HttpError } from "kestrel";
+
+/** The shape of Kestrel's per-upload logo key (`newLogoKey`, src/db/settings.ts). */
+const LOGO_KEY = /^branding\/logo\/\d+-[0-9a-f]{8}$/;
+/** Where the seed's logo is kept under the shared prefix, whatever key a seed gave it. */
+export const SEED_LOGO_KEY = "branding/logo/seed";
 
 /** The largest object a visitor may upload. It binds post images (Kestrel's own cap is
  *  5 MB); the logo has Kestrel's tighter 512 KB cap already. */
@@ -92,6 +99,9 @@ export class SandboxMedia {
       "CREATE TABLE IF NOT EXISTS demo_media (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL) STRICT",
     );
     this.sql.exec("CREATE TABLE IF NOT EXISTS demo_media_tombstones (key TEXT PRIMARY KEY) STRICT");
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS demo_media_aliases (key TEXT PRIMARY KEY, shared TEXT NOT NULL) STRICT",
+    );
   }
 
   /** As Kestrel's request handlers see it: the `R2Bucket` type, scoped to this sandbox. */
@@ -102,7 +112,9 @@ export class SandboxMedia {
   /**
    * The bucket only Kestrel's seed is given: a `put` writes the shared seed copy (once) and
    * drops anything of this sandbox's that would shadow it, so a re-seed restores the seed's
-   * images. Reads behave as the sandbox's own. Never handed to a request handler.
+   * images. A per-upload logo key is stored at `SEED_LOGO_KEY` and aliased, so every seed of
+   * a release shares one logo object rather than leaving one per seed in the shared prefix.
+   * Reads behave as the sandbox's own. Never handed to a request handler.
    */
   seedView(): R2Bucket {
     const view = {
@@ -113,9 +125,17 @@ export class SandboxMedia {
         await this.bucket.delete(this.sessionPrefix + key);
         this.sql.exec("DELETE FROM demo_media WHERE key = ?", key);
         this.sql.exec("DELETE FROM demo_media_tombstones WHERE key = ?", key);
+        const shared = LOGO_KEY.test(key) ? SEED_LOGO_KEY : key;
+        if (shared !== key) {
+          this.sql.exec(
+            "INSERT INTO demo_media_aliases (key, shared) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET shared = excluded.shared",
+            key,
+            shared,
+          );
+        }
         return (
-          (await this.bucket.head(this.seedPrefix + key)) ??
-          (await this.bucket.put(this.seedPrefix + key, value, options))
+          (await this.bucket.head(this.seedPrefix + shared)) ??
+          (await this.bucket.put(this.seedPrefix + shared, value, options))
         );
       },
       delete: (keys: string | string[]) => this.delete(keys),
@@ -127,6 +147,14 @@ export class SandboxMedia {
   usedBytes(): number {
     return this.sql.exec<{ n: number }>("SELECT coalesce(sum(bytes), 0) AS n FROM demo_media").one()
       .n;
+  }
+
+  /** Where a key this sandbox doesn't hold falls back to in the shared seed prefix. */
+  private seedKey(key: string): string {
+    const alias = this.sql
+      .exec<{ shared: string }>("SELECT shared FROM demo_media_aliases WHERE key = ?", key)
+      .toArray()[0];
+    return this.seedPrefix + (alias?.shared ?? key);
   }
 
   private tombstoned(key: string): boolean {
@@ -142,7 +170,7 @@ export class SandboxMedia {
     }
     return (
       (await this.bucket.get(this.sessionPrefix + key, options)) ??
-      (await this.bucket.get(this.seedPrefix + key, options))
+      (await this.bucket.get(this.seedKey(key), options))
     );
   }
 
@@ -153,7 +181,7 @@ export class SandboxMedia {
     }
     return (
       (await this.bucket.head(this.sessionPrefix + key)) ??
-      (await this.bucket.head(this.seedPrefix + key))
+      (await this.bucket.head(this.seedKey(key)))
     );
   }
 
@@ -236,5 +264,6 @@ export class SandboxMedia {
     } while (cursor);
     this.sql.exec("DELETE FROM demo_media");
     this.sql.exec("DELETE FROM demo_media_tombstones");
+    this.sql.exec("DELETE FROM demo_media_aliases");
   }
 }

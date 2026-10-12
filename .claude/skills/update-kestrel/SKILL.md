@@ -74,7 +74,7 @@ npm run check && npm test
 
 Kestrel's worker specs on the patched tree have two expected sets of failures (DESIGN.md, "The patch set"):
 - the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode);
-- the dev-badge specs in `test/archive.spec.ts`, which `0004-demo-chrome` changes.
+- the dev-badge specs in `test/archive.spec.ts`, and the web-version specs in `test/render_endpoints.spec.ts` that compare the archive page less the dev pill, which `0004-demo-chrome` changes.
 
 Anything else failing there, notably a send, notification or fake-transport spec, is a real finding. Then run the demo with `npm run dev` and look:
 - the dashboard loads a seeded sandbox;
