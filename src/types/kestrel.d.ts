@@ -21,7 +21,7 @@ export interface KestrelEnv {
 /** Kestrel's resolved `Config`, opaque here: the wrapper only passes it back to Kestrel. */
 export interface KestrelConfig {
   readonly appOrigin: string;
-  readonly provider: "fake" | "ses" | "resend";
+  readonly provider: "none" | "fake" | "ses" | "resend";
   readonly notifyChannel: "fake" | "cloudflare" | "provider";
 }
 
