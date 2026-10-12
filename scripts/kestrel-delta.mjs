@@ -50,6 +50,8 @@ const WATCHED = [
   "src/providers/fake.ts",
   "src/notify/fake.ts",
   "src/build.ts",
+  // The logo key shape src/media.ts aliases for the seed (newLogoKey).
+  "src/db/settings.ts",
   "scripts/build-client.mjs",
   "scripts/build-package.mjs",
   "scripts/stamp-version.mjs",

@@ -73,6 +73,13 @@ describe("Kestrel in a sandbox", () => {
     }
   });
 
+  it("leaves the demo pill out of a post's web version, which the editor frames", async () => {
+    const { body } = await me.json<{ posts: PostRow[] }>("/api/posts?status=draft");
+    const res = await me.fetch(`/api/posts/${body.posts[0]?.id}/web`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).not.toContain("r-demo");
+  });
+
   it("serves a seeded post's archive page, its cover image and the logo", async () => {
     const { body } = await me.json<{ posts: PostRow[] }>("/api/posts?status=sent");
     const srcs = new Set<string>();
