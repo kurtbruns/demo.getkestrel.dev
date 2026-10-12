@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import { IDLE_TTL_MS, RESET_PATH } from "../src/sandbox_do";
 import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
-import { BASE, SAME_ORIGIN, type Visitor, visitor } from "./support";
+import { BASE, SAME_ORIGIN, savePost, type Visitor, visitor } from "./support";
 
 const SECRET = (env as unknown as { SESSION_SECRET: string }).SESSION_SECRET;
 const EDITED = "Edited before the lifecycle event";
@@ -21,11 +21,7 @@ async function makeChanges(v: Visitor): Promise<void> {
   const { body } = await v.json<PostList>("/api/posts?status=draft");
   const draft = body.posts[0]?.id;
   expect(draft).toBeDefined();
-  const saved = await v.fetch(`/api/posts/${draft}`, {
-    method: "PUT",
-    headers: SAME_ORIGIN,
-    body: JSON.stringify({ subject: EDITED }),
-  });
+  const saved = await savePost(v, draft ?? "", { subject: EDITED });
   expect(saved.status).toBe(200);
   const uploaded = await v.fetch(`/api/posts/${draft}/images?filename=mine.png`, {
     method: "POST",
@@ -207,7 +203,11 @@ describe("the alarm", () => {
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     // Not seeded, not migrated: only the media wrapper's own bookkeeping tables, which it
     // creates as the object starts.
-    expect((await tables(stub)).sort()).toEqual(["demo_media", "demo_media_tombstones"]);
+    expect((await tables(stub)).sort()).toEqual([
+      "demo_media",
+      "demo_media_aliases",
+      "demo_media_tombstones",
+    ]);
     expect(await runInDurableObject(stub, (_i, state) => state.storage.getAlarm())).toBeNull();
   });
 

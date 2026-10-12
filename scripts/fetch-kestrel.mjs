@@ -7,8 +7,10 @@
  *   2. Apply patches/*.patch in filename order with `git apply`. One that doesn't apply stops
  *      the build, naming the patch: a Kestrel release that changed the patched lines fails
  *      here, in the PR that bumped the pin, never quietly later.
- *   3. Run Kestrel's own `npm ci` (its postinstall writes the build stamp,
- *      src/generated/version.ts) and its client build (dist/public, served as our assets).
+ *   3. Run Kestrel's own `npm ci` (its `prepare` script, scripts/build-package.mjs, writes the
+ *      build stamp, src/generated/version.ts, and builds the npm package's dist/, which only
+ *      the stamp and dist/public are used from) and its client build (dist/public, served as
+ *      our assets).
  *
  * A clone rather than a git dependency: npm installs a git dependency without its
  * devDependencies (the client build needs esbuild) and without .git (the stamp would read
@@ -58,6 +60,11 @@ const PATCHES = resolve(ROOT, process.env.KESTREL_PATCHES_DIR || "patches");
 const RECORD = join(dirname(DIR), ".kestrel-build.json");
 const AUTHORING = join(dirname(DIR), ".kestrel-authoring");
 const DEMO_ASSETS = join(dirname(DIR), "demo-assets.ts");
+
+// Wrangler runs this as its custom build for every command, `wrangler types` included, and
+// Kestrel's client build skips itself under WRANGLER_COMMAND=types. A build here is recorded
+// and then reused, so it must always be whole: no child sees that variable.
+delete process.env.WRANGLER_COMMAND;
 
 const args = new Set(process.argv.slice(2));
 const force = args.has("--force");
@@ -133,7 +140,7 @@ const IMAGE_TYPES = {
  * its code, as static imports. The images Kestrel's seed takes as files, which wrangler's
  * Data rule makes ArrayBuffers: every image beside a post's index.md, named
  * `<bundle>/<file>`, and the logo publication.md names. That is a superset of what Kestrel's
- * scripts/seed.mjs uploads (only the images a post shows), which is harmless: the seed looks
+ * cli/seed.mjs uploads (only the images a post shows), which is harmless: the seed looks
  * each image up by the name its post uses and ignores the rest. And its migrations/*.sql, as
  * text, in name order. Generated, so a release that adds a demo image or a migration needs
  * no change here.
@@ -147,7 +154,7 @@ function writeDemoAssets() {
   const postsDir = join(demo, "posts");
   // The layout above is Kestrel's since v1.2.0. A release laid out differently gets an
   // empty index and a warning, never a crashed build: the seed's own tests, and the
-  // update-kestrel skill's delta report (which watches demo/ and scripts/seed.mjs), are
+  // update-kestrel skill's delta report (which watches demo/ and cli/seed.mjs), are
   // where a changed seed contract gets caught.
   const missing = [postsDir, join(demo, "publication.md")].filter((p) => !existsSync(p));
   if (missing.length > 0) {
@@ -286,8 +293,15 @@ if (applyOnly) {
   process.exit(0);
 }
 
-say("installing Kestrel's dependencies (npm ci, which also writes its build stamp)");
+say("installing Kestrel's dependencies (npm ci, whose prepare script writes its build stamp)");
 run("npm", ["ci", "--no-audit", "--no-fund"], DIR);
+// The Worker imports the stamp (src/build.ts), so a release that stops writing it at install
+// fails here, by name, rather than at bundling.
+if (!existsSync(join(DIR, "src/generated/version.ts"))) {
+  fail(
+    "Kestrel's `npm ci` wrote no build stamp (src/generated/version.ts); see its package.json scripts",
+  );
+}
 
 say("building Kestrel's admin client");
 run("node", ["scripts/build-client.mjs"], DIR);

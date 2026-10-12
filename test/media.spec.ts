@@ -3,7 +3,7 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { MAX_OBJECT_BYTES, SandboxMedia } from "../src/media";
+import { MAX_OBJECT_BYTES, SandboxMedia, SEED_LOGO_KEY } from "../src/media";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import { SAME_ORIGIN, type Visitor, visitor } from "./support";
 
@@ -18,6 +18,15 @@ async function keysUnder(prefix: string): Promise<string[]> {
 
 async function sandboxPrefix(v: Visitor): Promise<string> {
   return runInDurableObject(await v.sandbox(), (instance) => instance.media.sessionPrefix);
+}
+
+/** The path of the logo `v`'s publication shows now, or "" with none. */
+async function logoPath(v: Visitor): Promise<string> {
+  const { body } = await v.json<{ settings: { publication: { logoUrl: string } } }>(
+    "/api/settings",
+  );
+  const url = body.settings.publication.logoUrl;
+  return url ? new URL(url).pathname : "";
 }
 
 async function bytesOf(res: Response): Promise<number[]> {
@@ -55,10 +64,28 @@ describe("seed images", () => {
     expect(await bytesOf(fromA)).toEqual(await bytesOf(fromB));
     const seed = await keysUnder("seed/");
     expect(seed.filter((k) => k.endsWith("/kestrel.webp"))).toHaveLength(1);
-    expect(seed.filter((k) => k.endsWith("/branding/logo"))).toHaveLength(1);
+    // Each seed names its logo anew (Kestrel keys every logo upload), yet the shared prefix
+    // holds one logo, at its fixed name.
+    expect(seed.filter((k) => k.includes("/branding/"))).toEqual([
+      expect.stringMatching(new RegExp(`/${SEED_LOGO_KEY}$`)),
+    ]);
     // Seeding wrote nothing under either sandbox's own prefix.
     expect(await keysUnder(await sandboxPrefix(a))).toEqual([]);
     expect(await keysUnder(await sandboxPrefix(b))).toEqual([]);
+  });
+
+  it("serve each sandbox's seeded logo at its own key, and not at another's", async () => {
+    const a = visitor();
+    const b = visitor();
+    const pathA = await logoPath(a);
+    const pathB = await logoPath(b);
+    expect(pathA).toMatch(/^\/media\/branding\/logo\/\d+-[0-9a-f]{8}$/);
+    expect(pathB).not.toBe(pathA);
+    const fromA = await a.fetch(pathA);
+    const fromB = await b.fetch(pathB);
+    expect(fromA.status).toBe(200);
+    expect(await bytesOf(fromA)).toEqual(await bytesOf(fromB));
+    expect((await b.fetch(pathA)).status).toBe(404);
   });
 
   it("are served privately, never for a shared cache", async () => {
@@ -283,18 +310,20 @@ describe("the logo", () => {
   it("replaced in one sandbox stays the seed's in another", async () => {
     const a = visitor();
     const b = visitor();
-    await a.fetch("/api/posts"); // a session starts with a GET
-    const seedLogo = await bytesOf(await b.fetch("/media/branding/logo"));
+    await logoPath(a); // a session starts with a GET
+    const seedLogo = await bytesOf(await b.fetch(await logoPath(b)));
     const mine = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9]);
     expect((await postLogo(a, mine)).status).toBe(200);
-    expect(await bytesOf(await a.fetch("/media/branding/logo"))).toEqual([...mine]);
-    expect(await bytesOf(await b.fetch("/media/branding/logo"))).toEqual(seedLogo);
+    const minePath = await logoPath(a);
+    expect(await bytesOf(await a.fetch(minePath))).toEqual([...mine]);
+    expect(await bytesOf(await b.fetch(await logoPath(b)))).toEqual(seedLogo);
+    expect((await b.fetch(minePath)).status).toBe(404);
   });
 
   it("removed in one sandbox stays removed there, and nowhere else", async () => {
     const a = visitor();
     const b = visitor();
-    expect((await a.fetch("/media/branding/logo")).status).toBe(200);
+    const seeded = await logoPath(a);
     const removed = await confirmingRemake((query) =>
       a.fetch(`/api/settings/logo${query}`, {
         method: "DELETE",
@@ -302,7 +331,9 @@ describe("the logo", () => {
       }),
     );
     expect(removed.status).toBe(200);
-    expect((await a.fetch("/media/branding/logo")).status).toBe(404);
-    expect((await b.fetch("/media/branding/logo")).status).toBe(200);
+    expect(await logoPath(a)).toBe("");
+    // Kestrel keeps a removed logo's bytes for the emails already sent with it.
+    expect((await a.fetch(seeded)).status).toBe(200);
+    expect((await b.fetch(await logoPath(b))).status).toBe(200);
   });
 });

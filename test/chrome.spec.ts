@@ -24,7 +24,7 @@ describe("the public pages", () => {
       "/archive", // the archive index (reader shell)
       `/archive/${slug}`, // a hosted post page (injected chrome; form-action 'none')
       "/subscribe", // a reader-shell form
-      "/unsubscribe?token=nope", // a card page
+      "/unsubscribe?token=nope", // a message page (reader shell)
     ];
     for (const path of pages) {
       const res = await v.fetch(path);

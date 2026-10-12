@@ -17,8 +17,12 @@ over. #23 replaced #9's full-width strip, which sat at the bottom of the public 
 but the top of the editor and made the editor scroll (its height, --demo-h, came off
 the layout). The public pill rides the dev pill's injection points (devDashboardStyle
 and devDashboardBadge in src/lib/page.ts), which reach only pages as served, never a
-frozen render or a sent email (I3); in this build those helpers always emit the demo
-pill in the dev pill's place, so a future caller elsewhere would carry it too. Reset
+frozen render or a sent email (I3). They emit the demo pill in the dev pill's place
+whenever a caller passes the dashboard URL, and devDashboardUrl (src/routes/reader.ts),
+which only the served pages call, gives "/dashboard/" here. Settings' reader-page previews
+(src/routes/reader_pages.ts), which upstream keeps pill-free by turning devMode off,
+already false here, mark their config readerPreview instead and get none; the editor's
+web version passes none. So neither shows the pill, as upstream's show no dev pill. Reset
 lives in the editor only: resetting is a publisher action, and a public page could not
 carry the form anyway (a post page forbids form posts, form-action 'none').
 
@@ -258,10 +262,10 @@ index 0000000..d20ff34
 +  });
 +});
 diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
-index fda090a..2125d4d 100644
+index 212d022..6b24ea9 100644
 --- a/public/dashboard/styles.css
 +++ b/public/dashboard/styles.css
-@@ -781,6 +781,196 @@ body.nav-resizing .sidebar {
+@@ -803,6 +803,196 @@ body.nav-resizing .sidebar {
  .identity .who.dev {
    font-style: italic;
  }
@@ -458,9 +462,9 @@ index fda090a..2125d4d 100644
  .identity a.ghost {
    font-size: 13px;
    color: var(--muted);
-@@ -2439,6 +2629,13 @@ th.num .th-sort {
- .toast.show {
-   opacity: 1;
+@@ -2579,6 +2769,13 @@ body.web-mode .content {
+     margin-top 0.3s,
+     padding-block 0.3s;
  }
 +/* Demo sandbox (patched by demo.getkestrel.dev): on a phone the demo pill sits where the
 +   toasts are centred, so they rise above it. */
@@ -473,10 +477,10 @@ index fda090a..2125d4d 100644
  /* modal */
  .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index fcd1285..2a48a16 100644
+index c121a6e..02329fd 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
-@@ -241,23 +241,66 @@ export interface ReaderIdentity {
+@@ -212,23 +212,70 @@ export interface ReaderIdentity {
    logoUrl?: string;
  }
  
@@ -527,11 +531,10 @@ index fcd1285..2a48a16 100644
 +
  /** The pill's stylesheet, emitted beside it and only when it is, so a deployed page
 - *  carries neither the link nor its styles. */
--function devDashboardStyle(url?: string): string {
++ *  carries neither the link nor its styles. (Patched: the demo pill's.) */
+ function devDashboardStyle(url?: string): string {
 -  return url ? `<style>${DEV_BADGE_STYLE}</style>` : "";
-+ *  carries neither the link nor its styles. (Patched: the demo pill's always.) */
-+function devDashboardStyle(_url?: string): string {
-+  return `<style>${DEV_BADGE_STYLE}${DEMO_PILL_STYLE}</style>`;
++  return url ? `<style>${DEV_BADGE_STYLE}${DEMO_PILL_STYLE}</style>` : "";
  }
  
  /** The dev-only editor shortcut (SPEC §5/§11): a fixed corner pill linking a local
@@ -540,15 +543,53 @@ index fcd1285..2a48a16 100644
   *  `/dashboard` carries no Access wall — so it is structurally absent once deployed
 - *  and never turns a public page into a link toward the admin gate. */
 + *  and never turns a public page into a link toward the admin gate.
-+ *  (Patched: the demo's split pill, always, in the dev pill's place. The reset lives in
-+ *  the dashboard only, so these pages carry no form.) */
++ *  (Patched: the demo's split pill in the dev pill's place, on every page as served, since
++ *  `devDashboardUrl` always gives one. The reset lives in the dashboard only, so these
++ *  pages carry no form.) */
  function devDashboardBadge(url?: string): string {
 -  // The "DEV" chip flags it as tooling; the title spells out the scope for anyone
 -  // who wonders whether it ships — it never does (see the doc above).
 -  return url
 -    ? `<a class="r-dev" href="${escapeHtmlAttr(url)}" title="Shown only on your local dev server"><span class="r-dev-tag">Dev</span>Open dashboard &rarr;</a>`
 -    : "";
-+  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Kestrel demo sandbox</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url ?? "/dashboard/")}">Open dashboard &rarr;</a></aside>`;
++  if (!url) {
++    return "";
++  }
++  return `<aside class="r-demo" aria-label="Kestrel demo"><details><summary><span class="r-dev-tag">Demo<svg class="r-demo-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></span><span class="r-demo-vh"> (about this demo)</span></summary><div class="r-demo-pop"><p class="r-demo-h">Kestrel demo sandbox</p><p class="r-demo-p">Only this browser can see it. Emails never really go out, and it resets after a day away. You can reset it from the dashboard.</p><div class="r-demo-foot"><a href="https://getkestrel.dev" target="_blank" rel="noopener">About Kestrel &#8599;</a></div></div></details><span class="r-demo-sep" aria-hidden="true"></span><a class="r-demo-go" href="${escapeHtmlAttr(url)}">Open dashboard &rarr;</a></aside>`;
  }
  
  /** The dev-only shortcut's browser-only chrome for a hosted post page, which is not
+diff --git a/src/routes/reader.ts b/src/routes/reader.ts
+index b1c7131..8132161 100644
+--- a/src/routes/reader.ts
++++ b/src/routes/reader.ts
+@@ -35,7 +35,11 @@ export function archiveHomeUrl(config: Config): string {
+  *  not a dev-shaped instance. Only local dev (no Access edge) surfaces this link, so
+  *  a deployed public page never points at the Access-gated editor (SPEC §5, §11). */
+ export function devDashboardUrl(config: Config): string | undefined {
+-  return config.devMode ? `${config.appOrigin}/dashboard/` : undefined;
++  // Demo sandbox (patched by demo.getkestrel.dev): every page as served carries the demo
++  // pill, whose way in is this sandbox's own editor. Settings' reader-page previews mark
++  // their config (`readerPreview`, reader_pages.ts) and the editor's web version passes no
++  // URL, so neither shows one, as upstream's show no dev pill.
++  return (config as Config & { readerPreview?: true }).readerPreview ? undefined : "/dashboard/";
+ }
+ 
+ /** A message page (confirm, unsubscribe, not found) in this instance's reader shell:
+diff --git a/src/routes/reader_pages.ts b/src/routes/reader_pages.ts
+index 75200d2..7483ac7 100644
+--- a/src/routes/reader_pages.ts
++++ b/src/routes/reader_pages.ts
+@@ -142,7 +142,11 @@ export async function readerPagePreview(c: RequestContext): Promise<Response> {
+   }
+   // A preview is the page a deployed reader gets, so it leaves out local dev's
+   // dashboard shortcut.
+-  const pc: RequestContext = { ...c, config: { ...c.config, devMode: false } };
++  // (Patched by demo.getkestrel.dev: marked, so `devDashboardUrl` leaves out the demo pill.)
++  const pc: RequestContext = {
++    ...c,
++    config: { ...c.config, devMode: false, readerPreview: true } as RequestContext["config"],
++  };
+   const page = await previewOf(pc, journey, state);
+   return new Response(page.body, {
+     headers: {
