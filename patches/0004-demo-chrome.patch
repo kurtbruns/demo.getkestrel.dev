@@ -3,8 +3,8 @@ Demo chrome (kurtbruns/demo.getkestrel.dev#9, revised in #23)
 What: Kestrel's dev-only "Open dashboard" pill, extended into a split pill in the same
 bottom-right corner on every surface. Its inverted tag reads "Demo" and opens a short
 note about the sandbox (a <details>, so it needs no script); the other half is the one
-action that matters there. On every public page (card pages, the reader shell, a hosted
-post page) that's "Open dashboard"; in the editor, "View publication", which the editor
+action that matters there. On every public page (the reader shell, a hosted post page)
+that's "Open dashboard"; in the editor, "View publication", which the editor
 and the docs room otherwise lack. In the editor the note also carries "Reset demo...", a
 nested step whose Reset button posts to the demo Worker's /_demo/reset; Cancel, Escape
 and a click outside close what's open. The pill is fixed, so it adds nothing to the
@@ -38,10 +38,10 @@ client specs pass.
 See DESIGN.md, "Static assets and demo chrome" and "The patch set".
 
 diff --git a/client/auth.ts b/client/auth.ts
-index 6e317ec..e5e9c7f 100644
+index 4312401..54a9305 100644
 --- a/client/auth.ts
 +++ b/client/auth.ts
-@@ -37,7 +37,14 @@ export function authHeaders(): Record<string, string> {
+@@ -38,7 +38,14 @@ export function authHeaders(): Record<string, string> {
   */
  export function renderIdentity(): void {
    const session = appState.session;
@@ -57,7 +57,7 @@ index 6e317ec..e5e9c7f 100644
      const p = session.principal;
      const who = p.email || (p.kind === "service" ? "Service token" : "Signed in");
      setHtml(
-@@ -52,6 +59,66 @@ export function renderIdentity(): void {
+@@ -53,6 +60,66 @@ export function renderIdentity(): void {
    }
  }
  
@@ -262,7 +262,7 @@ index 0000000..d20ff34
 +  });
 +});
 diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
-index 212d022..6b24ea9 100644
+index 683c092..01b73ea 100644
 --- a/public/dashboard/styles.css
 +++ b/public/dashboard/styles.css
 @@ -803,6 +803,196 @@ body.nav-resizing .sidebar {
@@ -462,7 +462,7 @@ index 212d022..6b24ea9 100644
  .identity a.ghost {
    font-size: 13px;
    color: var(--muted);
-@@ -2579,6 +2769,13 @@ body.web-mode .content {
+@@ -2607,6 +2797,13 @@ body.web-mode .content {
      margin-top 0.3s,
      padding-block 0.3s;
  }
@@ -477,20 +477,20 @@ index 212d022..6b24ea9 100644
  /* modal */
  .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index c121a6e..02329fd 100644
+index 8d2ca93..b1f2217 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
-@@ -212,23 +212,70 @@ export interface ReaderIdentity {
-   logoUrl?: string;
+@@ -221,23 +221,70 @@ export function readerIconLink(logoUrl?: string): string {
+   return logoUrl ? `<link rel="icon" href="${escapeHtmlAttr(logoUrl)}">` : "";
  }
  
 +/* Demo sandbox (patched by demo.getkestrel.dev): the dev pill, extended into a split pill
 +   on every public page: a "Demo" tag that opens a short note about the sandbox (a
 +   <details>, since these pages run no script), and "Open dashboard". It rides the dev
-+   pill's injection points, so it reaches the card pages, the reader shell and a hosted
-+   post page, but never a frozen render or a sent email (I3). It wears the dev pill's
-+   accent tokens (DEV_BADGE_STYLE, emitted whole beside it to keep this patch small; its
-+   .r-dev rules go unused) and adds the note's card colors. */
++   pill's injection points, so it reaches the reader shell and a hosted post page, but
++   never a frozen render or a sent email (I3). It wears the dev pill's accent tokens
++   (DEV_BADGE_STYLE, emitted whole beside it to keep this patch small; its .r-dev rules
++   go unused) and adds the note's card colors. */
 +const DEMO_PILL_STYLE = `
 +:root { --k-card:#ffffff; --k-ink:#18181b; --k-mut:#52525b; --k-line:#e4e4e7; --k-ring:#2563eb; }
 +@media (prefers-color-scheme: dark) { :root { --k-card:#232327; --k-ink:#ededed; --k-mut:#a1a1aa; --k-line:#3a3a41; --k-ring:#60a5fa; } }
