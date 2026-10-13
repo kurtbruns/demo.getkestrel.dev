@@ -131,9 +131,9 @@ describe("network egress", () => {
       await expect(fetch("https://example.com/")).rejects.toThrow(
         /outbound network access is disabled/,
       );
-      await expect(fetch(new Request("https://api.resend.com/emails/batch"))).rejects.toThrow(
-        /outbound network access is disabled/,
-      );
+      await expect(
+        fetch(new Request("https://email.us-east-1.amazonaws.com/v2/email/outbound-bulk-emails")),
+      ).rejects.toThrow(/outbound network access is disabled/);
       expect(instance.egressRefused()).toBe(before + 2);
     });
   });
@@ -197,23 +197,23 @@ describe("the sandbox config", () => {
 describe("the fake transport's memory (patches/0002-fake-outbox-bound.patch)", () => {
   const email = { subject: "s", html: "<p>h</p>", text: "t" };
 
-  it("keeps the newest 500 messages and 5,000 idempotency keys", () => {
+  it("keeps the newest 500 messages and 5,000 batch keys", () => {
     const tag = crypto.randomUUID();
     const recipients = Array.from({ length: 5200 }, (_, i) => ({
       email: `r${i}-${tag}@field-notes.example`,
       unsubscribeUrl: "https://demo.getkestrel.dev/u",
     }));
-    deliverToOutbox(email, recipients, { idempotencyKeyPrefix: tag });
+    deliverToOutbox(email, recipients, { purpose: "list", tag });
     const outbox = fakeOutbox();
     expect(outbox.length).toBe(500);
     expect(outbox.at(-1)?.to).toBe(recipients.at(-1)?.email);
     // Within the window a retried batch is deduped; the oldest keys have been evicted.
     const before = fakeOutbox().length;
     const newest = recipients.slice(-10);
-    deliverToOutbox(email, newest, { idempotencyKeyPrefix: tag });
+    deliverToOutbox(email, newest, { purpose: "list", tag });
     expect(fakeOutbox().length).toBe(before);
     expect(fakeOutbox().at(-1)?.to).toBe(recipients.at(-1)?.email); // nothing re-delivered
-    deliverToOutbox(email, recipients.slice(0, 1), { idempotencyKeyPrefix: tag });
+    deliverToOutbox(email, recipients.slice(0, 1), { purpose: "list", tag });
     expect(fakeOutbox().at(-1)?.to).toBe(recipients[0]?.email); // evicted, so delivered again
   });
 

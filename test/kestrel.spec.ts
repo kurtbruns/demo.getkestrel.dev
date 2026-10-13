@@ -109,6 +109,7 @@ describe("Kestrel in a sandbox", () => {
     expect(worker.DEV_AUTH_SECRET).toBeDefined(); // the leak this guards against is set up
     expect(Object.keys(sandboxEnv(env, {} as D1Database, {} as R2Bucket)).sort()).toEqual(
       [
+        "ALLOW_FAKE_PROVIDER",
         "APP_ORIGIN",
         "ARCHIVE_BASE_PATH",
         "AWS_REGION",

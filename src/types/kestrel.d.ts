@@ -9,6 +9,7 @@ export interface KestrelEnv {
   DB: D1Database;
   MEDIA: R2Bucket;
   PROVIDER: string;
+  ALLOW_FAKE_PROVIDER?: string;
   APP_ORIGIN: string;
   ARCHIVE_BASE_PATH: string;
   SENDING_DOMAIN: string;
@@ -21,7 +22,7 @@ export interface KestrelEnv {
 /** Kestrel's resolved `Config`, opaque here: the wrapper only passes it back to Kestrel. */
 export interface KestrelConfig {
   readonly appOrigin: string;
-  readonly provider: "none" | "fake" | "ses" | "resend";
+  readonly provider: "none" | "fake" | "ses";
   readonly notifyChannel: "fake" | "cloudflare" | "provider";
 }
 
@@ -80,7 +81,11 @@ export interface FakeEmail {
 export function deliverToOutbox(
   rendered: FakeEmail,
   recipients: { email: string; unsubscribeUrl: string }[],
-  opts: { idempotencyKeyPrefix: string; idempotencyKey?: string },
+  opts: {
+    purpose: "list" | "test" | "confirmation" | "notification";
+    tag: string;
+    batchKey?: string;
+  },
 ): { email: string; accepted: true; providerId: string }[];
 export function fakeOutbox(): readonly ({ to: string; providerId: string } & FakeEmail)[];
 export class FakeNotifier {
