@@ -120,6 +120,12 @@ describe("migrations", () => {
           .toArray()
           .map((r) => r.name);
         expect(recorded).toEqual(migrations.map((m) => m.name));
+        // Wrangler's own columns, so the record reads the same as on D1.
+        const columns = storage.sql
+          .exec<{ name: string }>("SELECT name FROM pragma_table_info('d1_migrations')")
+          .toArray()
+          .map((r) => r.name);
+        expect(columns).toEqual(["id", "name", "applied_at"]);
       },
       { schema: false },
     );

@@ -81,7 +81,11 @@ export interface FakeEmail {
 export function deliverToOutbox(
   rendered: FakeEmail,
   recipients: { email: string; unsubscribeUrl: string }[],
-  opts: { tag: string; batchKey?: string },
+  opts: {
+    purpose: "list" | "test" | "confirmation" | "notification";
+    tag: string;
+    batchKey?: string;
+  },
 ): { email: string; accepted: true; providerId: string }[];
 export function fakeOutbox(): readonly ({ to: string; providerId: string } & FakeEmail)[];
 export class FakeNotifier {
