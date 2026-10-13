@@ -10,7 +10,7 @@ import { BUILD_INFO } from "kestrel";
 import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import type { SandboxDO } from "../src/sandbox_do";
-import { savePost, visitor } from "./support";
+import { exportList, importList, savePost, visitor } from "./support";
 
 interface PostRow {
   id: string;
@@ -123,14 +123,43 @@ describe("Kestrel in a sandbox", () => {
       ].sort(),
     );
     const { status, body } = await me.json<{
-      deployment: { provider: string; accessConfigured: boolean; authMode: string };
+      deployment: {
+        provider: string;
+        accessConfigured: boolean;
+        authMode: string;
+        freePlanLimits: boolean;
+      };
     }>("/api/settings");
     expect(status).toBe(200);
     expect(body.deployment).toMatchObject({
       provider: "fake",
       accessConfigured: false,
       authMode: "demo",
+      // SUBREQUEST_BUDGET is above Workers Free's default, so no warnings about D1's daily
+      // writes, which a sandbox's SQLite doesn't have.
+      freePlanLimits: false,
     });
+  });
+
+  it("imports a list through the adapter and exports it back", async () => {
+    const { body: format } = await me.json<{ limits: { max_rows: number } }>("/api/imports/format");
+    expect(format.limits.max_rows).toBe(10_000);
+    const imported = await importList(me, {
+      name: "list.csv",
+      text: "email,status,opt_in,origin\r\nimported-ada@example.com,subscribed,double,sendy\r\nimported-edsger@example.com,unsubscribed,unknown,sendy\r\n",
+    });
+    expect(imported.counts).toMatchObject({ create_confirmed: 1, create_unsubscribed: 1 });
+    expect(imported.status).toBe(201);
+
+    const exported = await exportList(me);
+    expect(exported.find((r) => r.email === "imported-ada@example.com")).toMatchObject({
+      status: "subscribed",
+      origin: "sendy",
+    });
+    expect(exported.find((r) => r.email === "imported-edsger@example.com")).toMatchObject({
+      status: "unsubscribed",
+    });
+    expect(new Set(exported.map((r) => r.email)).size).toBe(exported.length);
   });
 
   it("saves a same-origin draft edit, which persists", async () => {

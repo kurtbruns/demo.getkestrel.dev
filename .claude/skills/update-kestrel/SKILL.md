@@ -50,7 +50,7 @@ Set `.kestrel-version` to the new tag, then `npm run build -- --force`.
 
 `tsc` checks the wrapper only against the hand-written `src/types/kestrel.d.ts`, so a signature change in Kestrel passes `npm run check`. For every file the report lists under "What the wrapper imports or relies on", compare what `kestrel/entry.ts` re-exports with the shim, and update the shim to match. Then:
 - **New D1 API flagged:** extend `src/d1/adapter.ts` and its tests (`test/d1-adapter.spec.ts`).
-- **New migrations:** nothing to do. `test/d1-adapter.spec.ts` checks every table, index and added column they declare.
+- **New migrations:** nothing to do. `test/d1-adapter.spec.ts` replays them in order and checks every table, index and added column they leave, and that every one they drop is gone.
 - **Wrangler changes:** if Kestrel's compatibility date, flags or module rules changed, mirror them in this repo's `wrangler.jsonc`. A newer compatibility date may need this repo's `wrangler` (and so workerd) bumped too.
 - **New or changed env vars** (`src/env.ts`, e.g. a new required var or a new optional one with a default): decide whether the sandbox sets it, then update `sandboxEnv` (`src/sandbox.ts`), the `KestrelEnv` shim, `checkSandboxConfig` if it affects the transport or notifications, and the allowlist test in `test/kestrel.spec.ts`.
 

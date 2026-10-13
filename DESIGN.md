@@ -1,6 +1,6 @@
 # Design: the per-visitor Kestrel sandbox
 
-demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.8.0; the file references below hold at that tag.
+demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.9.0; the file references below hold at that tag.
 
 ## Goals and non-goals
 
@@ -73,6 +73,7 @@ The tests that enforce it:
   - it's absent from B's archive index, landing page and post list;
   - it 404s for a visitor with no cookie (who gets a fresh sandbox);
   - it 404s for a cookie that only resembles A's;
+  - a list A imports is in A's export and subscriber list, and in neither of B's;
   - every response class the Worker makes carries `noindex`, the 429 page included.
 - `test/build/assets-headers.test.mjs`: the built static assets' `_headers` marks every asset `noindex`.
 - `test/media.spec.ts`:
@@ -132,7 +133,7 @@ Why a patch set, over the two alternatives considered:
 - **A seam in Kestrel** (an exported `createHandler({ authenticate })`, briefly filed as kurtbruns/kestrel#471 and closed): general and tested upstream, but it would make Kestrel ship, document and maintain an extension point whose only consumer is this demo, which cuts against keeping Kestrel small for self-hosters.
 - **A full fork** (a `kestrel-demo` repo or long-lived branch): no build-time machinery, but every release becomes a merge in a second repo with its own history and CI, which is a lot of process for a few dozen changed lines.
 
-On the patched tree, Kestrel's own client specs, typecheck and CSS token check pass. Its server specs that assert what the patches change on purpose fail there: the auth specs under `0001`, and under `0004` the dev-badge specs in `test/archive.spec.ts` and the two web-version specs in `test/render_endpoints.spec.ts` that compare the archive page, less Kestrel's dev pill, with the web version. Everything else passes, including its send, notification and fake-transport specs.
+On the patched tree, Kestrel's own client specs, typecheck and CSS token check pass. Its server specs that assert what the patches change on purpose fail there: the auth specs under `0001` (the 401s, the auth mode, and since v1.9.0 the import specs that commit as a service token or expect the signed-in tester's address on the import record, since every request is the demo's human principal), and under `0004` the dev-badge specs in `test/archive.spec.ts` and the two web-version specs in `test/render_endpoints.spec.ts` that compare the archive page, less Kestrel's dev pill, with the web version. Everything else passes, including its send, notification and fake-transport specs.
 
 The cost of patches is that they touch Kestrel's internals, so a refactor upstream can break them; they fail at build, which is the right place. The demo is then "Kestrel at the pinned tag plus these patches", and the patch list is short enough to read in full.
 
@@ -142,14 +143,15 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### The D1-compatible adapter
 
-`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.8.0:
+`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.9.0:
 
-- `prepare(sql)` (about 140 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (22 sites, in `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `send/schedule`, `send/remake`, `send/budget`).
+- `prepare(sql)` (about 150 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (22 sites, in `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `send/schedule`, `send/remake`, `send/budget`).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
 - Results: `all()` and `run()` return `{ results, success, meta }`. Kestrel reads `meta.changes` (19 sites), so it must be exact. DO SQLite's cursor reports `rowsWritten`, which also counts index writes, so the adapter reads SQLite's own `changes()` (and `last_insert_rowid()`) after each statement and uses `rowsWritten` only to tell whether the statement wrote at all, which a SELECT following a write needs.
+- Statement shapes: since v1.9.0 the send loop moves a batch of deliveries with one `UPDATE … FROM json_each(?) … RETURNING` inside a `batch`, and its `meta.changes` must count only the rows it moved. DO SQLite runs it, and `test/d1-adapter.spec.ts` holds the adapter to it. Kestrel's own tests also read `meta.rows_read` and `meta.rows_written` (`test/support/d1_guard.ts`), but only on their own D1, never through the adapter, so it doesn't report them.
 - `batch` must be atomic: all statements commit or none do, which the adapter gets from `ctx.storage.transactionSync`. Kestrel also uses `batch` as a consistent multi-SELECT read (the send list and feed read a sequence number, counts and rows together), so every entry returns its full rows, all read inside that one transaction.
 - Error text matters: `send/schedule.ts` recognizes a double schedule by matching `UNIQUE constraint failed: sends.post_id` in the error message, so the adapter must let SQLite's constraint messages through unchanged.
-- Schema features: every table is `STRICT`, queries use `json_each` to bind lists, some use `RETURNING`, and foreign keys are enforced, as on D1. DO SQLite supports all four, and `test/d1-adapter.spec.ts` proves it on Kestrel's own schema, ending with Kestrel's full Field Notes seed run through the adapter.
+- Schema features: every table is `STRICT`, queries use `json_each` to bind lists, some use `RETURNING`, and foreign keys are enforced, as on D1. DO SQLite supports all four, and `test/d1-adapter.spec.ts` proves it on Kestrel's own schema (every table, index and column the migrations leave, replayed in order so a dropped index or a rebuilt table counts), ending with Kestrel's full Field Notes seed run through the adapter.
 - Held to D1's limits: at most 100 bound parameters, `undefined` refused as a bind value, and `first(column)` refusing an unknown column, so the demo is no more lenient than a real deployment.
 - Migrations: `src/d1/migrate.ts` applies Kestrel's `migrations/*.sql` in name order, each inside `transactionSync` (DO SQLite refuses `BEGIN`/`COMMIT` in `sql.exec`), and records each in wrangler's own `d1_migrations` table, in wrangler's shape, so a re-run is a no-op. Kestrel reads that table: since v1.8.0 it refuses to serve a database missing a migration it ships (`schema_behind`), so the record has to be the one wrangler keeps. A sandbox migrated before v1.8.0 kept it in `demo_migrations`, which the runner carries over once. DO SQLite's `sql.exec` refuses a script whose tail after the last `;` is only a comment (after running what came before it), where wrangler's runner accepts one, so every script gets a trailing no-op statement. The SQL comes from the same generated module as the demo images, `vendor/demo-assets.ts`, so a Kestrel release with a new migration needs no change here.
 
@@ -192,12 +194,12 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 
 - **The fake transport only.** `sandboxEnv` fixes `PROVIDER=fake`. It has to name it: since v1.7.0 an unset `PROVIDER` means no provider is connected (`none`), which refuses every send, rather than the fake. Since v1.8.0 Kestrel also refuses `fake` off a loopback origin unless the env opts in, so `sandboxEnv` sets `ALLOW_FAKE_PROVIDER: "true"`. It declares no `NOTIFY` binding, so publisher notifications go through the fake provider too (`notifyChannel` resolves to `provider` deployed, `fake` on a loopback dev origin). As a second check, the DO resolves Kestrel's own config before migrating and refuses to run unless the provider is `fake` and notifications aren't Cloudflare's email (`checkSandboxConfig`).
 - **The alarm drives the sweep.** The DO's alarm calls Kestrel's own `scheduled()` with a `ScheduledController`-shaped `{ cron: "* * * * *", scheduledTime, noRetry }`, collects its `waitUntil` work, and awaits it. A tick that fails is logged, as Kestrel's own cron would, and the next one comes from re-arming, not the runtime's alarm retries. After every request and every sweep, the DO re-arms the alarm for `nextWake`, the earliest reason to wake: a minute from now while a send is `sending`, and the earliest scheduled send's `fire_at`. The idle expiry ("Lifecycle") is a third term. Every reason to wake is a term in `nextWake`, so the one alarm always serves the soonest, and a seeded sandbox with nothing to send wakes only at its expiry. There is no Cron Trigger, so no single tick sweeps every sandbox. The DO reads Kestrel's `sends` table directly (read-only) to decide this, so a Kestrel release that changes those columns fails here loudly. With the plain fake transport, a send is `sending` for at most one tick (or one five-minute lease after a crash), and nothing halts or waits on receipts.
-- **Fast enough to watch.** `MIN_LEAD_SECONDS=60` (Kestrel's floor) keeps a demo send watchable within a visit. `SUBREQUEST_BUDGET=1000` (Kestrel's cap) lets a send finish in one tick, since the adapter's statements are local SQLite calls, not D1 subrequests.
+- **Fast enough to watch.** `MIN_LEAD_SECONDS=60` (Kestrel's floor) keeps a demo send watchable within a visit. `SUBREQUEST_BUDGET=1000` (Kestrel's cap) lets a send finish in one tick, since the adapter's statements are local SQLite calls, not D1 subrequests. Since v1.9.0 Kestrel also reads that setting as the Workers plan: left at Free's default it warns before a send or import that may spend D1's daily written rows (the `daily_writes` condition, the Schedule dialog's and scheduled banner's warning, `freePlanLimits` in the settings reflection), and takes 1,000 rows an import and an export page. A sandbox's SQLite has no such daily allowance, so those warnings would be false there, and the sandbox runs at the full sizes: 10,000 rows an import and an export page.
 - **No egress.** `src/egress.ts` replaces `globalThis.fetch` with one that refuses every request. It's installed by the Worker entry's first import (`src/egress-install.ts`), and ES modules evaluate in import order, so the block is in place before any of Kestrel's modules are even evaluated. Every outbound call Kestrel can make goes through it: SES through aws4fetch, SNS signing certificates and subscription URLs, Access's JWKS. Each resolves the global `fetch` when it's called. In the sandbox none of those paths is even reachable, since the webhook routes delegate to the active provider, always the fake. So the block is a backstop, and the tests show a full send completing with nothing refused, and a refused fetch counted. It's isolate-wide, which is fine: the Worker reaches its sandboxes and R2 through bindings, never the global fetch.
 
 ### Module-level state in Kestrel
 
-DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.8.0 that is:
+DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.9.0 that is:
 
 - `providers/fake.ts`: the in-memory `outbox` of every message "sent" and the `sentKeys` map, keyed by batch and address. Both grow without bound in a long-lived isolate.
 - `notify/fake.ts`: the notifications outbox, which grows the same way.
@@ -224,7 +226,7 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 | `ARCHIVE_BASE_PATH` | `/archive` | Kestrel default |
 | `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | `send.field-notes.example`, `Field Notes <newsletter@send.field-notes.example>`, `us-east-1` | required by `Env`, unused by the fake; `.example` can't route mail |
 | `MIN_LEAD_SECONDS` | `60` | a send fires within a visit |
-| `SUBREQUEST_BUDGET` | up to `1000` | sends finish in one tick |
+| `SUBREQUEST_BUDGET` | `1000` | sends finish in one tick; off Workers Free's limits, so no D1 daily-writes warnings |
 | `ACCESS_*`, `DEV_AUTH_SECRET`, `NOTIFY`, provider credentials | unset | see "Auth" and "Sends" |
 
 ## Open questions
