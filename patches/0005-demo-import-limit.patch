@@ -1,0 +1,48 @@
+Demo import limit (kurtbruns/demo.getkestrel.dev#35)
+
+What: `maxImportRows` (src/services/imports.ts) gives the demo sandbox a limit of 1,000 rows
+an import, with a reason naming the demo, where an instance off Workers Free's limits gets the
+format's 10,000. `GET /api/imports/format` reports it as `limits.max_rows`, and a plan or
+commit over it is Kestrel's own 400 `too_many_rows`. The Workers Free branch is unchanged.
+The export's page size and the request body cap are untouched.
+
+Why: the sandbox sets `SUBREQUEST_BUDGET=1000` so a send finishes in one tick and Kestrel
+shows no warnings about D1's daily writes, which a sandbox's SQLite doesn't have. Since
+Kestrel 1.9.0 that budget also lets an import take 10,000 rows, and imports aren't rate
+limited, so one visitor could grow their sandbox by several MB a commit until the idle
+wipe. 1,000 rows is plenty to try an import, and the cap lives where Kestrel decides it, so
+the format route advertises what the plan enforces.
+
+See DESIGN.md, "The patch set".
+
+diff --git a/src/services/imports.ts b/src/services/imports.ts
+index d1fdd2e..a32ac41 100644
+--- a/src/services/imports.ts
++++ b/src/services/imports.ts
+@@ -83,6 +83,9 @@ export interface Plan {
+  * The most rows one import takes on this deployment: the format's limit, or less on Workers
+  * Free, judged as the send budget is (`SUBREQUEST_BUDGET` left at the Free plan's), since
+  * 10 ms of CPU per request can't read and apply the full limit.
++ *
++ * Demo sandbox (patched by demo.getkestrel.dev): every sandbox takes at most
++ * `DEMO_MAX_IMPORT_ROWS`, whatever the budget, so a visitor's sandbox stays small.
+  */
+ export function maxImportRows(subrequestBudget: number): {
+   maxRows: number;
+@@ -93,9 +96,15 @@ export function maxImportRows(subrequestBudget: number): {
+         maxRows: IMPORT_LIMITS.maxRowsFree,
+         reason: `This deployment runs on the Workers Free plan’s limits (SUBREQUEST_BUDGET unset), whose 10 ms of CPU per request can plan and commit about ${IMPORT_LIMITS.maxRowsFree.toLocaleString("en-US")} rows; on Workers Paid, set SUBREQUEST_BUDGET to take up to ${IMPORT_LIMITS.maxRows.toLocaleString("en-US")}.`,
+       }
+-    : { maxRows: IMPORT_LIMITS.maxRows, reason: null };
++    : {
++        maxRows: DEMO_MAX_IMPORT_ROWS,
++        reason: `This demo sandbox takes up to ${DEMO_MAX_IMPORT_ROWS.toLocaleString("en-US")} rows an import, to keep each visitor’s sandbox small; a Kestrel deployment on Workers Paid takes up to ${IMPORT_LIMITS.maxRows.toLocaleString("en-US")}.`,
++      };
+ }
+ 
++/** The demo sandbox's import limit (demo.getkestrel.dev), below the format's own. */
++const DEMO_MAX_IMPORT_ROWS = 1_000;
++
+ /** Rows per page of the export, judged from the plan as the import limit is. */
+ export function exportPageRows(subrequestBudget: number): number {
+   return onFreePlanLimits({ subrequestBudget }) ? EXPORT_PAGE_ROWS.free : EXPORT_PAGE_ROWS.paid;

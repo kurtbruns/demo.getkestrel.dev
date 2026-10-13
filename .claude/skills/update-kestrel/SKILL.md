@@ -72,9 +72,10 @@ npm run check && npm test
 (cd vendor/kestrel && npx vitest run --project worker)
 ```
 
-Kestrel's worker specs on the patched tree have two expected sets of failures (DESIGN.md, "The patch set"):
-- the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode);
-- the dev-badge specs in `test/archive.spec.ts`, and the web-version specs in `test/render_endpoints.spec.ts` that compare the archive page less the dev pill, which `0004-demo-chrome` changes.
+Kestrel's worker specs on the patched tree have three expected sets of failures (DESIGN.md, "The patch set"):
+- the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode, and the import specs that commit as a service token or expect the tester's address);
+- the dev-badge specs in `test/archive.spec.ts`, and the web-version specs in `test/render_endpoints.spec.ts` that compare the archive page less the dev pill, which `0004-demo-chrome` changes;
+- the import specs in `test/imports.spec.ts` that expect 10,000 rows when the budget says Workers Paid, which `0005-demo-import-limit` caps at 1,000.
 
 Anything else failing there, notably a send, notification or fake-transport spec, is a real finding. Then run the demo with `npm run dev` and look:
 - the dashboard loads a seeded sandbox;

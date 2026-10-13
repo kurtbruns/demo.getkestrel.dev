@@ -35,7 +35,7 @@ export function sandboxEnv(
     // statements are local SQLite calls, not subrequests, so a send finishes in one tick.
     // Above the default, Kestrel also reads the deployment as off Workers Free's limits
     // (since v1.9.0), so it shows no warnings about D1's daily writes, which a sandbox's
-    // SQLite doesn't have, and takes imports and pages exports at its full sizes.
+    // SQLite doesn't have. Imports are capped at 1,000 rows by patches/0005 instead.
     SUBREQUEST_BUDGET: "1000",
   };
 }

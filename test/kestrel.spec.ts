@@ -10,7 +10,7 @@ import { BUILD_INFO } from "kestrel";
 import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import type { SandboxDO } from "../src/sandbox_do";
-import { exportList, importList, savePost, visitor } from "./support";
+import { exportList, importList, SAME_ORIGIN, savePost, visitor } from "./support";
 
 interface PostRow {
   id: string;
@@ -141,9 +141,30 @@ describe("Kestrel in a sandbox", () => {
     });
   });
 
+  it("caps an import at 1,000 rows, as the format says (patches/0005-demo-import-limit.patch)", async () => {
+    const { body: format } = await me.json<{
+      limits: { max_rows: number; max_rows_reason: string | null };
+    }>("/api/imports/format");
+    expect(format.limits.max_rows).toBe(1_000);
+    expect(format.limits.max_rows_reason).toMatch(/demo sandbox/);
+    const list = (n: number) => ({
+      name: "list.txt",
+      text: Array.from({ length: n }, (_, i) => `capped-${i}@example.com\r\n`).join(""),
+    });
+    const plan = (n: number) =>
+      me.json<{ error?: string; limit?: number; counts?: Record<string, number> }>(
+        "/api/imports/plan",
+        { method: "POST", headers: SAME_ORIGIN, body: JSON.stringify({ file: list(n) }) },
+      );
+    const over = await plan(1_001);
+    expect(over.status).toBe(400);
+    expect(over.body).toMatchObject({ error: "too_many_rows", limit: 1_000 });
+    const at = await plan(1_000);
+    expect(at.status).toBe(200);
+    expect(at.body.counts?.create_confirmed).toBe(1_000);
+  });
+
   it("imports a list through the adapter and exports it back", async () => {
-    const { body: format } = await me.json<{ limits: { max_rows: number } }>("/api/imports/format");
-    expect(format.limits.max_rows).toBe(10_000);
     const imported = await importList(me, {
       name: "list.csv",
       text: "email,status,opt_in,origin\r\nimported-ada@example.com,subscribed,double,sendy\r\nimported-edsger@example.com,unsubscribed,unknown,sendy\r\n",
