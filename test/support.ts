@@ -135,3 +135,63 @@ export async function savePost(
     body: JSON.stringify({ ...fields, base_revision: body.post.current_revision }),
   });
 }
+
+/** A row of Kestrel's list export (`kestrel-subscribers/1`), as far as the tests read it. */
+export interface ExportedRow {
+  email: string;
+  status: string;
+  origin: string;
+}
+
+/**
+ * Import `file` into `v`'s sandbox as the editor does (since v1.9.0): plan it, then commit
+ * the plan with the attestation and every growing send acknowledged, as a person may.
+ * Returns the plan's counts and the commit's status.
+ */
+export async function importList(
+  v: Visitor,
+  file: { name: string; text: string },
+): Promise<{ counts: Record<string, number>; status: number }> {
+  const plan = await v.json<{
+    counts: Record<string, number>;
+    plan_hash: string;
+    attestation: { version: number } | null;
+    sends_growing: { id: string }[];
+  }>("/api/imports/plan", { method: "POST", headers: SAME_ORIGIN, body: JSON.stringify({ file }) });
+  if (plan.status !== 200) {
+    throw new Error(`the import plan answered ${plan.status}`);
+  }
+  const commit = await v.fetch("/api/imports", {
+    method: "POST",
+    headers: SAME_ORIGIN,
+    body: JSON.stringify({
+      file,
+      plan_hash: plan.body.plan_hash,
+      ...(plan.body.attestation
+        ? { attestation: { version: plan.body.attestation.version, accepted: true } }
+        : {}),
+      acknowledge_sends: plan.body.sends_growing.map((s) => s.id),
+    }),
+  });
+  await commit.arrayBuffer();
+  return { counts: plan.body.counts, status: commit.status };
+}
+
+/** Read `v`'s whole list through the export, following `next` to the end (at the sandbox's
+ *  10,000-row pages, the seed's list is one page, so `next` is null at once). */
+export async function exportList(v: Visitor): Promise<ExportedRow[]> {
+  const rows: ExportedRow[] = [];
+  let after: string | null = null;
+  do {
+    const query: string = after ? `?after=${encodeURIComponent(after)}` : "";
+    const page = await v.json<{ subscribers: ExportedRow[]; next: string | null }>(
+      `/api/subscribers/export${query}`,
+    );
+    if (page.status !== 200) {
+      throw new Error(`the export answered ${page.status}`);
+    }
+    rows.push(...page.body.subscribers);
+    after = page.body.next;
+  } while (after);
+  return rows;
+}

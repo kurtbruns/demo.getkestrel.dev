@@ -3,6 +3,9 @@
 // selects, so nobody can mint a demo URL that shows anyone else's content, and nothing the
 // demo serves is indexed.
 //
+// A list imported in one sandbox (since Kestrel v1.9.0) is likewise absent from another's
+// export and subscriber list.
+//
 // Related tests elsewhere: an upload in one sandbox 404s in another at the same path, and a
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
 // tampered cookie is a new session, not a way in (test/sessions.spec.ts).
@@ -10,7 +13,7 @@
 import { runInDurableObject, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SESSION_COOKIE } from "../src/session";
-import { BASE, exhaustNewSessions, publish, visitor } from "./support";
+import { BASE, exhaustNewSessions, exportList, importList, publish, visitor } from "./support";
 
 const MARKER = `isolation-${crypto.randomUUID()}`;
 
@@ -104,6 +107,31 @@ describe("a post published in one sandbox", () => {
     const other = await b.fetch(`/unsubscribe?token=${token}`);
     expect(other.status).toBe(400);
     await other.arrayBuffer();
+  });
+});
+
+describe("a list imported in one sandbox", () => {
+  const a = visitor();
+  const b = visitor();
+  const address = `${MARKER}@example.com`;
+
+  beforeAll(async () => {
+    await a.fetch("/api/posts"); // a session first: a cookieless write starts none
+    const imported = await importList(a, { name: "list.txt", text: `${address}\r\n` });
+    expect(imported.status).toBe(201);
+    await b.fetch("/api/posts"); // B has a sandbox of its own
+  });
+
+  it("is in its own sandbox's export and subscriber list, and in neither of another's", async () => {
+    expect((await exportList(a)).map((r) => r.email)).toContain(address);
+    expect((await exportList(b)).map((r) => r.email)).not.toContain(address);
+    const path = `/api/subscribers?search=${encodeURIComponent(MARKER)}`;
+    const own = await a.fetch(path);
+    expect(own.status).toBe(200);
+    expect(await own.text()).toContain(address);
+    const other = await b.fetch(path);
+    expect(other.status).toBe(200);
+    expect(await other.text()).not.toContain(address);
   });
 });
 

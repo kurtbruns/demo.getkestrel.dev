@@ -50,7 +50,7 @@ Set `.kestrel-version` to the new tag, then `npm run build -- --force`.
 
 `tsc` checks the wrapper only against the hand-written `src/types/kestrel.d.ts`, so a signature change in Kestrel passes `npm run check`. For every file the report lists under "What the wrapper imports or relies on", compare what `kestrel/entry.ts` re-exports with the shim, and update the shim to match. Then:
 - **New D1 API flagged:** extend `src/d1/adapter.ts` and its tests (`test/d1-adapter.spec.ts`).
-- **New migrations:** nothing to do. `test/d1-adapter.spec.ts` checks every table, index and added column they declare.
+- **New migrations:** nothing to do. `test/d1-adapter.spec.ts` replays them in order and checks every table, index and added column they leave, and that every one they drop is gone.
 - **Wrangler changes:** if Kestrel's compatibility date, flags or module rules changed, mirror them in this repo's `wrangler.jsonc`. A newer compatibility date may need this repo's `wrangler` (and so workerd) bumped too.
 - **New or changed env vars** (`src/env.ts`, e.g. a new required var or a new optional one with a default): decide whether the sandbox sets it, then update `sandboxEnv` (`src/sandbox.ts`), the `KestrelEnv` shim, `checkSandboxConfig` if it affects the transport or notifications, and the allowlist test in `test/kestrel.spec.ts`.
 
@@ -60,7 +60,7 @@ The safety property (DESIGN.md) rests on facts about Kestrel that a release can 
 - **Module state:** look for new module-scope state (`const x = new Map/Set`, top-level `let`) in `src/`. DESIGN.md's "Module-level state in Kestrel" lists what's there today. Anything new that holds visitor data and is reachable over HTTP would cross sandboxes in a shared isolate.
 - **Routes:** look for new routes in `src/app.ts`. Each must be answered from the visitor's own sandbox (it is, by construction, unless the Worker answers it itself). A new dev-only route must stay behind `devMode`.
 - **Outbound calls:** check that each one still resolves the global `fetch` when it's called (not a reference captured at module load), so the egress block (`src/egress.ts`) still covers it. Also look for new `connect()` or WebSocket use.
-- **D1 API:** re-survey what Kestrel calls (`.prepare/.bind/.first/.all/.run/.raw/.batch/.exec`, `meta.` fields), beyond the report's section.
+- **D1 API:** re-survey what Kestrel calls (`.prepare/.bind/.first/.all/.run/.raw/.batch/.exec`, `meta.` fields), beyond the report's section. Count calls with a type argument too, which a plain `.batch(` search misses: `git grep -nE '\.(prepare|batch|raw|exec)(<[^(]*>)?\(' <new> -- src | cut -d: -f2 | sort | uniq -c` (`.all(` and `.first(` also match `Promise.all` and other code, so read those hits).
 - **DESIGN.md:** update the notes that name the release they were checked against ("At v1.2.0" in "Module-level state", "Surveyed at v1.2.0" in the adapter section, and the version in the opening paragraph).
 
 ## 4. Check
@@ -72,9 +72,10 @@ npm run check && npm test
 (cd vendor/kestrel && npx vitest run --project worker)
 ```
 
-Kestrel's worker specs on the patched tree have two expected sets of failures (DESIGN.md, "The patch set"):
-- the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode);
-- the dev-badge specs in `test/archive.spec.ts`, and the web-version specs in `test/render_endpoints.spec.ts` that compare the archive page less the dev pill, which `0004-demo-chrome` changes.
+Kestrel's worker specs on the patched tree have three expected sets of failures (DESIGN.md, "The patch set"):
+- the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode, and the import specs that commit as a service token or expect the tester's address);
+- the dev-badge specs in `test/archive.spec.ts`, and the web-version specs in `test/render_endpoints.spec.ts` that compare the archive page less the dev pill, which `0004-demo-chrome` changes;
+- the import specs in `test/imports.spec.ts` that expect 10,000 rows when the budget says Workers Paid, which `0005-demo-import-limit` caps at 1,000.
 
 Anything else failing there, notably a send, notification or fake-transport spec, is a real finding. Then run the demo with `npm run dev` and look:
 - the dashboard loads a seeded sandbox;

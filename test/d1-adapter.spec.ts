@@ -45,22 +45,57 @@ describe("migrations", () => {
       (_db, storage) => {
         expect(migrate(storage, migrations)).toEqual(migrations.map((m) => m.name));
         expect(migrate(storage, migrations)).toEqual([]);
-        // Every table, index and added column Kestrel's migrations declare exists.
+        // Every table, index and added column Kestrel's migrations leave exists, and every
+        // one they drop is gone. Replayed in order, since a later migration can drop an
+        // index (0006) or rebuild a table under a temporary name (0005's notifications).
         const objects = new Set(
           storage.sql
             .exec<{ name: string }>("SELECT name FROM sqlite_master")
             .toArray()
             .map((r) => r.name),
         );
-        const all = migrations.map((m) => m.sql).join("\n");
-        const declared = [
-          ...all.matchAll(
-            /CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi,
-          ),
-        ].map((m) => m[1]);
-        expect(declared.length).toBeGreaterThan(10);
-        for (const name of declared) {
+        const all = migrations
+          .map((m) => m.sql)
+          .join("\n")
+          .replace(/--[^\n]*/g, "");
+        const schema = new Map<string, string | null>(); // name → the table an index is on
+        const dropped = new Set<string>();
+        for (const [, createKind, created, on, dropKind, gone, from, to] of all.matchAll(
+          /CREATE\s+(?:UNIQUE\s+)?(TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)(?:\s+ON\s+(\w+))?|DROP\s+(TABLE|INDEX)\s+(?:IF\s+EXISTS\s+)?(\w+)|ALTER\s+TABLE\s+(\w+)\s+RENAME\s+TO\s+(\w+)/gi,
+        )) {
+          if (created) {
+            schema.set(created, createKind?.toUpperCase() === "INDEX" ? (on ?? null) : null);
+            dropped.delete(created);
+          } else if (gone) {
+            schema.delete(gone);
+            dropped.add(gone);
+            if (dropKind?.toUpperCase() === "TABLE") {
+              // SQLite drops a table's indexes with it.
+              for (const [name, table] of schema) {
+                if (table === gone) {
+                  schema.delete(name);
+                  dropped.add(name);
+                }
+              }
+            }
+          } else if (from && to) {
+            schema.delete(from);
+            schema.set(to, null);
+            dropped.add(from);
+            dropped.delete(to);
+            for (const [name, table] of schema) {
+              if (table === from) {
+                schema.set(name, to);
+              }
+            }
+          }
+        }
+        expect(schema.size).toBeGreaterThan(10);
+        for (const name of schema.keys()) {
           expect(objects, name).toContain(name);
+        }
+        for (const name of dropped) {
+          expect(objects, `${name} (dropped)`).not.toContain(name);
         }
         for (const [, table, column] of all.matchAll(
           /ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)/gi,
@@ -230,6 +265,40 @@ describe("statements", () => {
         t: 1,
         f: 0,
       });
+    });
+  });
+
+  it("support UPDATE … FROM json_each(?) … RETURNING, counting only the rows it moved", async () => {
+    // The shape of the send loop's hand-off since v1.9.0 (Kestrel's src/db/sends.ts): each
+    // row takes its own value from the bound batch, and a row the guard excludes is untouched.
+    await inSandbox(async (db) => {
+      await db.batch([insertPost(db, "a"), insertPost(db, "b"), insertPost(db, "c")]);
+      await db.prepare("UPDATE posts SET subject = 'kept' WHERE id = 'c'").run();
+      const [moved] = await db.batch<{ id: string; subject: string }>([
+        db
+          .prepare(
+            `UPDATE posts SET subject = json_extract(j.value, '$.s')
+               FROM json_each(?) AS j
+              WHERE posts.id = json_extract(j.value, '$.id') AND +posts.subject = ''
+              RETURNING posts.id AS id, posts.subject AS subject`,
+          )
+          .bind(
+            JSON.stringify([
+              { id: "a", s: "first" },
+              { id: "b", s: "second" },
+              { id: "c", s: "never" },
+              { id: "nope", s: "nobody" },
+            ]),
+          ),
+      ]);
+      expect(moved?.meta.changes).toBe(2);
+      expect([...(moved?.results ?? [])].sort((x, y) => x.id.localeCompare(y.id))).toEqual([
+        { id: "a", subject: "first" },
+        { id: "b", subject: "second" },
+      ]);
+      expect(await db.prepare("SELECT subject FROM posts WHERE id = 'c'").first("subject")).toBe(
+        "kept",
+      );
     });
   });
 
