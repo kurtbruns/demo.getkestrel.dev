@@ -16,20 +16,21 @@ the format route advertises what the plan enforces.
 See DESIGN.md, "The patch set".
 
 diff --git a/src/services/imports.ts b/src/services/imports.ts
-index d1fdd2e..a32ac41 100644
+index d1fdd2e..4f0cd74 100644
 --- a/src/services/imports.ts
 +++ b/src/services/imports.ts
-@@ -83,6 +83,9 @@ export interface Plan {
+@@ -83,6 +83,10 @@ export interface Plan {
   * The most rows one import takes on this deployment: the format's limit, or less on Workers
   * Free, judged as the send budget is (`SUBREQUEST_BUDGET` left at the Free plan's), since
   * 10 ms of CPU per request can't read and apply the full limit.
 + *
-+ * Demo sandbox (patched by demo.getkestrel.dev): every sandbox takes at most
-+ * `DEMO_MAX_IMPORT_ROWS`, whatever the budget, so a visitor's sandbox stays small.
++ * Demo sandbox (patched by demo.getkestrel.dev): off Workers Free's limits, the sandbox
++ * takes `DEMO_MAX_IMPORT_ROWS` instead of the format's limit, so a visitor's sandbox stays
++ * small.
   */
  export function maxImportRows(subrequestBudget: number): {
    maxRows: number;
-@@ -93,9 +96,15 @@ export function maxImportRows(subrequestBudget: number): {
+@@ -93,9 +97,15 @@ export function maxImportRows(subrequestBudget: number): {
          maxRows: IMPORT_LIMITS.maxRowsFree,
          reason: `This deployment runs on the Workers Free plan’s limits (SUBREQUEST_BUDGET unset), whose 10 ms of CPU per request can plan and commit about ${IMPORT_LIMITS.maxRowsFree.toLocaleString("en-US")} rows; on Workers Paid, set SUBREQUEST_BUDGET to take up to ${IMPORT_LIMITS.maxRows.toLocaleString("en-US")}.`,
        }

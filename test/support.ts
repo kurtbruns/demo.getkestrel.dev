@@ -177,7 +177,8 @@ export async function importList(
   return { counts: plan.body.counts, status: commit.status };
 }
 
-/** Read `v`'s whole list through the paged export, following `next` to the end. */
+/** Read `v`'s whole list through the export, following `next` to the end (at the sandbox's
+ *  10,000-row pages, the seed's list is one page, so `next` is null at once). */
 export async function exportList(v: Visitor): Promise<ExportedRow[]> {
   const rows: ExportedRow[] = [];
   let after: string | null = null;

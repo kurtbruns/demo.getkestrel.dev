@@ -60,7 +60,7 @@ The safety property (DESIGN.md) rests on facts about Kestrel that a release can 
 - **Module state:** look for new module-scope state (`const x = new Map/Set`, top-level `let`) in `src/`. DESIGN.md's "Module-level state in Kestrel" lists what's there today. Anything new that holds visitor data and is reachable over HTTP would cross sandboxes in a shared isolate.
 - **Routes:** look for new routes in `src/app.ts`. Each must be answered from the visitor's own sandbox (it is, by construction, unless the Worker answers it itself). A new dev-only route must stay behind `devMode`.
 - **Outbound calls:** check that each one still resolves the global `fetch` when it's called (not a reference captured at module load), so the egress block (`src/egress.ts`) still covers it. Also look for new `connect()` or WebSocket use.
-- **D1 API:** re-survey what Kestrel calls (`.prepare/.bind/.first/.all/.run/.raw/.batch/.exec`, `meta.` fields), beyond the report's section.
+- **D1 API:** re-survey what Kestrel calls (`.prepare/.bind/.first/.all/.run/.raw/.batch/.exec`, `meta.` fields), beyond the report's section. Count calls with a type argument too, which a plain `.batch(` search misses: `git grep -nE '\.(prepare|batch|raw|exec)(<[^(]*>)?\(' <new> -- src | cut -d: -f2 | sort | uniq -c` (`.all(` and `.first(` also match `Promise.all` and other code, so read those hits).
 - **DESIGN.md:** update the notes that name the release they were checked against ("At v1.2.0" in "Module-level state", "Surveyed at v1.2.0" in the adapter section, and the version in the opening paragraph).
 
 ## 4. Check
