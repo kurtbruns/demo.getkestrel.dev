@@ -42,10 +42,10 @@ index c013081..37975eb 100644
      ? [
          '-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"',
 diff --git a/client/settings/deploy.ts b/client/settings/deploy.ts
-index 6d00b4a..1c5c232 100644
+index 8c7796c..f344ef4 100644
 --- a/client/settings/deploy.ts
 +++ b/client/settings/deploy.ts
-@@ -87,7 +87,7 @@ export function instanceSection(page: SettingsPage): Html {
+@@ -85,7 +85,7 @@ export function instanceSection(page: SettingsPage): Html {
            <div class="set-kv-k">App origin</div><div class="set-kv-v"><span class="mono">${d.appOrigin}</span></div>
            <div class="set-kv-k">Archive URL base</div><div class="set-kv-v"><span class="mono">${archiveBase}</span>${archiveIsDefault ? html`<span class="set-pill">default: app origin</span>` : null}</div>
            <div class="set-kv-k">Image URL base</div><div class="set-kv-v"><span class="mono">${d.mediaPublicBase}</span></div>
@@ -68,10 +68,10 @@ index b561c0b..776f361 100644
  
  export interface AppState {
 diff --git a/shared/settings.ts b/shared/settings.ts
-index 6e10087..b583299 100644
+index 97510ee..126f63f 100644
 --- a/shared/settings.ts
 +++ b/shared/settings.ts
-@@ -84,7 +84,7 @@ export interface DeploymentView {
+@@ -83,7 +83,7 @@ export interface DeploymentView {
    awsRegion: string;
    accessConfigured: boolean;
    /** How the reader of this reflection signed in: through Access, or with the local dev token. */
@@ -81,10 +81,10 @@ index 6e10087..b583299 100644
    /** How notifications reach the publisher: Cloudflare's own email, the newsletter's provider, or the dev fake that delivers nothing. */
    notifyChannel: "cloudflare" | "provider" | "fake";
 diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
-index 8fb98d6..552f56b 100644
+index b7c121b..8fde77d 100644
 --- a/src/auth/middleware.ts
 +++ b/src/auth/middleware.ts
-@@ -10,32 +10,26 @@
+@@ -13,32 +13,26 @@
  import type { AppEnv, Config } from "../env";
  import { json } from "../lib/errors";
  import type { Middleware, Principal } from "../router";
@@ -132,12 +132,12 @@ index 8fb98d6..552f56b 100644
 +  return DEMO_PRINCIPAL;
  }
  
- /** Route middleware: require a valid principal or 401. */
+ /**
 diff --git a/src/router.ts b/src/router.ts
-index e17baff..50af9bb 100644
+index eeeb3e6..4eea925 100644
 --- a/src/router.ts
 +++ b/src/router.ts
-@@ -29,7 +29,7 @@ export interface Principal {
+@@ -39,7 +39,7 @@ export interface Principal {
    email?: string;
    /** How this request authenticated: a Cloudflare Access assertion, or the local dev token.
     *  What `auth.mode` reports, so it says how the caller got in rather than what is configured. */

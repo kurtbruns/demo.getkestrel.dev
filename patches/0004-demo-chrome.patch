@@ -38,10 +38,10 @@ client specs pass.
 See DESIGN.md, "Static assets and demo chrome" and "The patch set".
 
 diff --git a/client/auth.ts b/client/auth.ts
-index 4312401..54a9305 100644
+index 4c891ff..e1e563e 100644
 --- a/client/auth.ts
 +++ b/client/auth.ts
-@@ -38,7 +38,14 @@ export function authHeaders(): Record<string, string> {
+@@ -39,7 +39,14 @@ export function authHeaders(): Record<string, string> {
   */
  export function renderIdentity(): void {
    const session = appState.session;
@@ -57,7 +57,7 @@ index 4312401..54a9305 100644
      const p = session.principal;
      const who = p.email || (p.kind === "service" ? "Service token" : "Signed in");
      setHtml(
-@@ -53,6 +60,66 @@ export function renderIdentity(): void {
+@@ -54,6 +61,66 @@ export function renderIdentity(): void {
    }
  }
  
@@ -262,10 +262,10 @@ index 0000000..d20ff34
 +  });
 +});
 diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
-index 683c092..01b73ea 100644
+index d362e42..25c9184 100644
 --- a/public/dashboard/styles.css
 +++ b/public/dashboard/styles.css
-@@ -803,6 +803,196 @@ body.nav-resizing .sidebar {
+@@ -801,6 +801,196 @@ body.nav-resizing .sidebar {
  .identity .who.dev {
    font-style: italic;
  }
@@ -462,7 +462,7 @@ index 683c092..01b73ea 100644
  .identity a.ghost {
    font-size: 13px;
    color: var(--muted);
-@@ -2607,6 +2797,13 @@ body.web-mode .content {
+@@ -2638,6 +2828,13 @@ body.web-mode .content {
      margin-top 0.3s,
      padding-block 0.3s;
  }
@@ -477,7 +477,7 @@ index 683c092..01b73ea 100644
  /* modal */
  .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index 8d2ca93..b1f2217 100644
+index 7194db0..d99ad0a 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
 @@ -221,23 +221,70 @@ export function readerIconLink(logoUrl?: string): string {

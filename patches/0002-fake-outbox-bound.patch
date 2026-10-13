@@ -40,13 +40,13 @@ index 19fc84d..8baeacc 100644
    }
  }
 diff --git a/src/providers/fake.ts b/src/providers/fake.ts
-index da67190..b5f3a5e 100644
+index a38c9be..d577928 100644
 --- a/src/providers/fake.ts
 +++ b/src/providers/fake.ts
-@@ -36,6 +36,13 @@ export interface FakeMessage {
+@@ -35,6 +35,13 @@ export interface FakeMessage {
  
  const outbox: FakeMessage[] = [];
- const sentKeys = new Map<string, string>(); // idempotency key -> providerId
+ const sentKeys = new Map<string, string>(); // batch key + address -> providerId
 +
 +// Demo sandbox (patched by demo.getkestrel.dev): both are module state, which a long-lived
 +// isolate running many sandboxes never clears, so keep only the newest. The key window
@@ -57,7 +57,7 @@ index da67190..b5f3a5e 100644
  let failCount = 0;
  
  export function fakeOutbox(): readonly FakeMessage[] {
-@@ -77,6 +84,12 @@ export function deliverToOutbox(
+@@ -75,6 +82,12 @@ export function deliverToOutbox(
        ".Email.SentTo": r.email,
      });
      sentKeys.set(key, providerId);

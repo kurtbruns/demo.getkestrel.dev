@@ -20,6 +20,9 @@ export function sandboxEnv(
     DB: db,
     MEDIA: media,
     PROVIDER: "fake",
+    // Kestrel refuses `fake` off a loopback origin unless the deployment opts in, as a hosted
+    // demo does on purpose (since v1.8.0).
+    ALLOW_FAKE_PROVIDER: "true",
     APP_ORIGIN: env.APP_ORIGIN,
     ARCHIVE_BASE_PATH: "/archive",
     // Required by Kestrel's Env and unused by the fake transport; .example can't route mail.

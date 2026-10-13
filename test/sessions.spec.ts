@@ -226,7 +226,7 @@ describe("hardening", () => {
     const stub = env.SANDBOX.get(env.SANDBOX.idFromName(name));
     // A migrations table the runner can't read makes the start throw.
     await runInDurableObject(stub, (_i, state) => {
-      state.storage.sql.exec("CREATE TABLE demo_migrations (unexpected INTEGER)");
+      state.storage.sql.exec("CREATE TABLE d1_migrations (unexpected INTEGER)");
     });
     const cookie = `${SESSION_COOKIE}=${value}`;
     const broken = await SELF.fetch(`${BASE}/api/posts`, { headers: { cookie } });
@@ -236,7 +236,7 @@ describe("hardening", () => {
     // A start that throws inside blockConcurrencyWhile breaks the object, which the runtime
     // resets; a fresh stub reaches the new instance (over the same storage).
     const fix = (_i: unknown, state: DurableObjectState) => {
-      state.storage.sql.exec("DROP TABLE IF EXISTS demo_migrations");
+      state.storage.sql.exec("DROP TABLE IF EXISTS d1_migrations");
     };
     await runInDurableObject(stub, fix).catch(() =>
       runInDurableObject(env.SANDBOX.get(env.SANDBOX.idFromName(name)), fix),

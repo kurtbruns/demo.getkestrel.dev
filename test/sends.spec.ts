@@ -203,17 +203,17 @@ describe("the fake transport's memory (patches/0002-fake-outbox-bound.patch)", (
       email: `r${i}-${tag}@field-notes.example`,
       unsubscribeUrl: "https://demo.getkestrel.dev/u",
     }));
-    deliverToOutbox(email, recipients, { idempotencyKeyPrefix: tag });
+    deliverToOutbox(email, recipients, { tag });
     const outbox = fakeOutbox();
     expect(outbox.length).toBe(500);
     expect(outbox.at(-1)?.to).toBe(recipients.at(-1)?.email);
     // Within the window a retried batch is deduped; the oldest keys have been evicted.
     const before = fakeOutbox().length;
     const newest = recipients.slice(-10);
-    deliverToOutbox(email, newest, { idempotencyKeyPrefix: tag });
+    deliverToOutbox(email, newest, { tag });
     expect(fakeOutbox().length).toBe(before);
     expect(fakeOutbox().at(-1)?.to).toBe(recipients.at(-1)?.email); // nothing re-delivered
-    deliverToOutbox(email, recipients.slice(0, 1), { idempotencyKeyPrefix: tag });
+    deliverToOutbox(email, recipients.slice(0, 1), { tag });
     expect(fakeOutbox().at(-1)?.to).toBe(recipients[0]?.email); // evicted, so delivered again
   });
 

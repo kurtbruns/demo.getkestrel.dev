@@ -110,6 +110,44 @@ describe("migrations", () => {
       { schema: false },
     );
   });
+
+  it("record them in wrangler's d1_migrations, which Kestrel reads to refuse a database behind it", async () => {
+    await inSandbox(
+      (_db, storage) => {
+        migrate(storage, migrations);
+        const recorded = storage.sql
+          .exec<{ name: string }>("SELECT name FROM d1_migrations ORDER BY id")
+          .toArray()
+          .map((r) => r.name);
+        expect(recorded).toEqual(migrations.map((m) => m.name));
+      },
+      { schema: false },
+    );
+  });
+
+  it("carry an older sandbox's demo_migrations record over once, re-running nothing", async () => {
+    await inSandbox(
+      (_db, storage) => {
+        const first = migrations.slice(0, -1);
+        migrate(storage, first);
+        // As a sandbox migrated before the record moved left it.
+        storage.sql.exec(
+          "CREATE TABLE demo_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
+        );
+        storage.sql.exec(
+          "INSERT INTO demo_migrations (name, applied_at) SELECT name, 0 FROM d1_migrations",
+        );
+        storage.sql.exec("DROP TABLE d1_migrations");
+        expect(migrate(storage, migrations)).toEqual([migrations.at(-1)?.name]);
+        const legacy = storage.sql
+          .exec("SELECT name FROM sqlite_master WHERE name = 'demo_migrations'")
+          .toArray();
+        expect(legacy).toEqual([]);
+        expect(migrate(storage, migrations)).toEqual([]);
+      },
+      { schema: false },
+    );
+  });
 });
 
 describe("statements", () => {
