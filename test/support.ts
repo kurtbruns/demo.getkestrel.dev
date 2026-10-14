@@ -56,6 +56,10 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
 /** Headers for a write the editor itself would send. */
 export const SAME_ORIGIN = { "content-type": "application/json", "sec-fetch-site": "same-origin" };
 
+/** Headers for a same-origin write that takes no body, such as Erase: Kestrel refuses a
+ *  Content-Type on one (415). */
+export const NO_BODY = { "sec-fetch-site": "same-origin" };
+
 /**
  * Publish a new post in `v`'s sandbox the way the editor would (create, schedule at the
  * minimum lead), then let its fire time pass and run the sandbox's sweep alarm, so it lands

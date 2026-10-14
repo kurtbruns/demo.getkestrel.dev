@@ -10,7 +10,7 @@ import { BUILD_INFO } from "kestrel";
 import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import type { SandboxDO } from "../src/sandbox_do";
-import { exportList, importList, SAME_ORIGIN, savePost, visitor } from "./support";
+import { exportList, importList, NO_BODY, SAME_ORIGIN, savePost, visitor } from "./support";
 
 interface PostRow {
   id: string;
@@ -181,6 +181,79 @@ describe("Kestrel in a sandbox", () => {
       status: "unsubscribed",
     });
     expect(new Set(exported.map((r) => r.email)).size).toBe(exported.length);
+  });
+
+  it("erases a reader who was mailed, through the adapter, and every send still adds up", async () => {
+    // Kestrel's erase is one four-statement batch whose first `meta.changes` says whether it
+    // happened and whose last says how many past deliveries now show an erased recipient, so
+    // both depend on the adapter's counts being exact (DESIGN.md, the D1-compatible adapter).
+    const stub = await me.sandbox();
+    const reader = await runInDurableObject(stub, (_i, state) => {
+      const row = state.storage.sql
+        .exec<{ id: string; email: string }>(
+          `SELECT id, email FROM subscribers s WHERE status = 'confirmed'
+             AND NOT EXISTS (SELECT 1 FROM suppressions p WHERE p.email = s.email)
+             AND EXISTS (SELECT 1 FROM deliveries d WHERE d.email = s.email)
+           ORDER BY created_at LIMIT 1`,
+        )
+        .one();
+      const sendIds = state.storage.sql
+        .exec<{ send_id: string }>(
+          "SELECT DISTINCT send_id FROM deliveries WHERE email = ? ORDER BY send_id",
+          row.email,
+        )
+        .toArray()
+        .map((r) => String(r.send_id));
+      const mailed = state.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries WHERE email = ?", row.email)
+        .one().n;
+      return { id: String(row.id), email: String(row.email), sendIds, mailed: Number(mailed) };
+    });
+    expect(reader.mailed).toBeGreaterThan(0);
+
+    type SendView = { send: { audience: { count: number }; counts: Record<string, number> } };
+    const records = async () =>
+      Promise.all(
+        reader.sendIds.map(async (id) => {
+          const { status, body } = await me.json<SendView>(`/api/sends/${id}`);
+          expect(status).toBe(200);
+          return { audience: body.send.audience.count, counts: body.send.counts };
+        }),
+      );
+    const before = await records();
+
+    const erased = await me.json<{
+      erased: { email: string; deliveries: number; suppression: string };
+    }>(`/api/subscribers/${reader.id}/erase`, { method: "POST", headers: NO_BODY });
+    expect(erased.status, JSON.stringify(erased.body)).toBe(200);
+    expect(erased.body.erased).toEqual({
+      email: reader.email,
+      deliveries: reader.mailed,
+      suppression: "erased",
+    });
+
+    // The record still adds up: the same audience and buckets, with an erased recipient in
+    // place of the address.
+    expect(await records()).toEqual(before);
+    const left = await runInDurableObject(stub, (_i, state) =>
+      Number(
+        state.storage.sql
+          .exec<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries WHERE email = ?", reader.email)
+          .one().n,
+      ),
+    );
+    expect(left).toBe(0);
+    const gone = await me.fetch(`/api/subscribers?email=${encodeURIComponent(reader.email)}`);
+    expect(gone.status).toBe(404);
+    await gone.arrayBuffer();
+
+    // Only the person's own confirmation lifts the do-not-contact marker.
+    const cleared = await me.json<{ error: string }>(
+      `/api/suppressions/${encodeURIComponent(reader.email)}`,
+      { method: "DELETE", headers: NO_BODY },
+    );
+    expect(cleared.status).toBe(409);
+    expect(cleared.body.error).toBe("erasure_marker");
   });
 
   it("saves a same-origin draft edit, which persists", async () => {

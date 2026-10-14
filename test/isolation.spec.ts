@@ -4,7 +4,8 @@
 // demo serves is indexed.
 //
 // A list imported in one sandbox (since Kestrel v1.9.0) is likewise absent from another's
-// export and subscriber list.
+// export and subscriber list, and a block or an erasure (since v1.10.0) suppresses the
+// address in its own sandbox only.
 //
 // Related tests elsewhere: an upload in one sandbox 404s in another at the same path, and a
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
@@ -13,7 +14,17 @@
 import { runInDurableObject, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SESSION_COOKIE } from "../src/session";
-import { BASE, exhaustNewSessions, exportList, importList, publish, visitor } from "./support";
+import {
+  BASE,
+  exhaustNewSessions,
+  exportList,
+  importList,
+  NO_BODY,
+  publish,
+  SAME_ORIGIN,
+  type Visitor,
+  visitor,
+} from "./support";
 
 const MARKER = `isolation-${crypto.randomUUID()}`;
 
@@ -132,6 +143,74 @@ describe("a list imported in one sandbox", () => {
     const other = await b.fetch(path);
     expect(other.status).toBe(200);
     expect(await other.text()).not.toContain(address);
+  });
+});
+
+describe("a block or an erasure in one sandbox", () => {
+  // Every sandbox is seeded with the same Field Notes list, so the same reader is in both:
+  // what A does to them must not reach B's copy.
+  const a = visitor();
+  const b = visitor();
+  let blocked = "";
+  let erased = "";
+
+  const lookup = (v: Visitor, email: string) =>
+    v.json<{ subscriber?: { status: string }; suppressed?: boolean }>(
+      `/api/subscribers?email=${encodeURIComponent(email)}`,
+    );
+
+  beforeAll(async () => {
+    await a.fetch("/api/posts");
+    await b.fetch("/api/posts");
+    const readers = await runInDurableObject(await a.sandbox(), (_i, state) =>
+      state.storage.sql
+        .exec<{ id: string; email: string }>(
+          `SELECT id, email FROM subscribers s WHERE status = 'confirmed'
+             AND NOT EXISTS (SELECT 1 FROM suppressions p WHERE p.email = s.email)
+           ORDER BY created_at LIMIT 2`,
+        )
+        .toArray()
+        .map((r) => ({ id: String(r.id), email: String(r.email) })),
+    );
+    const [toBlock, toErase] = readers;
+    if (!toBlock || !toErase) {
+      throw new Error("the seed has fewer than two unsuppressed confirmed readers");
+    }
+    blocked = toBlock.email;
+    erased = toErase.email;
+    const block = await a.fetch("/api/suppressions", {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ email: blocked }),
+    });
+    expect(block.status).toBe(201);
+    await block.arrayBuffer();
+    const erase = await a.fetch(`/api/subscribers/${toErase.id}/erase`, {
+      method: "POST",
+      headers: NO_BODY,
+    });
+    expect(erase.status).toBe(200);
+    await erase.arrayBuffer();
+  });
+
+  it("suppresses the address in its own sandbox only", async () => {
+    // A positive control: in A, the block holds and the erased reader is gone.
+    expect((await lookup(a, blocked)).body.suppressed).toBe(true);
+    expect((await lookup(a, erased)).status).toBe(404);
+    for (const email of [blocked, erased]) {
+      const other = await lookup(b, email);
+      expect(other.status, email).toBe(200);
+      expect(other.body.subscriber?.status, email).toBe("confirmed");
+      expect(other.body.suppressed, email).toBe(false);
+    }
+    const own = await a.fetch("/api/suppressions");
+    const ownText = await own.text();
+    const theirs = await b.fetch("/api/suppressions");
+    const theirsText = await theirs.text();
+    for (const email of [blocked, erased]) {
+      expect(ownText, email).toContain(email);
+      expect(theirsText, email).not.toContain(email);
+    }
   });
 });
 
