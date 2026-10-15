@@ -31,7 +31,7 @@ index 9498123..8a91f9d 100644
  export function maxImportRows(subrequestBudget: number): {
    maxRows: number;
 @@ -102,9 +106,15 @@ export function maxImportRows(subrequestBudget: number): {
-         // is the operator's, in the API reference and the import format page.
+         // is the operator's, in the API reference and Bring your existing list's file format.
          reason: `That’s the limit on Cloudflare’s Workers Free plan. Whoever runs your Kestrel can raise it to ${IMPORT_LIMITS.maxRows.toLocaleString("en-US")} rows by moving to Workers Paid.`,
        }
 -    : { maxRows: IMPORT_LIMITS.maxRows, reason: null };
