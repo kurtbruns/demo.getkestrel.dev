@@ -93,7 +93,7 @@ The tests that enforce it:
 
 ### Version pin
 
-`.kestrel-version` holds the Kestrel release tag the demo runs (starting at `v1.2.0`), mirroring getkestrel.dev's `.kestrel-docs-version`. The build makes a shallow clone of Kestrel at exactly that tag into a gitignored `vendor/kestrel/`, applies the patch set, runs Kestrel's own `npm ci`, and builds:
+`.kestrel-version` holds the Kestrel release tag the demo runs (starting at `v1.2.0`), mirroring getkestrel.dev's own `.kestrel-version`. The build makes a shallow clone of Kestrel at exactly that tag into a gitignored `vendor/kestrel/`, applies the patch set, runs Kestrel's own `npm ci`, and builds:
 
 - the Worker code, which the wrapper imports from Kestrel's `src/`;
 - Kestrel's admin client (`scripts/build-client.mjs`: `public/` + `client/` → `dist/public`), which the demo serves as its static assets;
@@ -103,7 +103,7 @@ Since v1.5.0 Kestrel also ships as the npm package `@kurtbruns/kestrel`: the Wor
 
 The demo's wrangler config has to carry what Kestrel's does for its code to bundle: the `Text` rule for `**/*.md` (the demo posts and the setup docs are imported as text) and `nodejs_compat`. The css-inline `.wasm` import needs no rule, since wrangler's default `CompiledWasm` rule covers it, as it does in Kestrel's own config.
 
-A clone rather than a git dependency (`github:kurtbruns/kestrel#v1.2.0`), because npm installs a git dependency without its devDependencies (Kestrel's client build needs esbuild) and without `.git` (so the build stamp would read `dev` instead of the tag), and because a patch set needs a working tree to apply to. It mirrors how getkestrel.dev's CI clones Kestrel at `.kestrel-docs-version`.
+A clone rather than a git dependency (`github:kurtbruns/kestrel#v1.2.0`), because npm installs a git dependency without its devDependencies (Kestrel's client build needs esbuild) and without `.git` (so the build stamp would read `dev` instead of the tag), and because a patch set needs a working tree to apply to. It mirrors how getkestrel.dev's CI clones Kestrel at its `.kestrel-version`.
 
 ### The `kestrel` module
 

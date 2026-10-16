@@ -92,4 +92,4 @@ Anything else failing there, notably a send, notification or fake-transport spec
   - what you checked by hand.
 - **Issue:** a bump has no issue of its own unless you file one. File "Kestrel vX.Y.Z" in this repo first, so the PR can say `Closes #N` (`.claude/CLAUDE.md`).
 - **On merge:** the deploy workflow ships it to production (when the repo variable `DEPLOY_ENABLED` is `true`), and every existing sandbox, seeded by the old release, is wiped and seeded fresh on its next request.
-- **Then:** offer to bump getkestrel.dev's `.kestrel-docs-version` too (its `refresh-from-kestrel` skill), so the site's docs match the demo.
+- **Then:** offer to bump getkestrel.dev's `.kestrel-version` too (its `refresh-from-kestrel` skill), so the site's docs match the demo.
