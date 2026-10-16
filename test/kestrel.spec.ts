@@ -17,6 +17,7 @@ interface PostRow {
   slug: string;
   status: string;
   subject: string;
+  email_only: boolean;
 }
 
 describe("Kestrel in a sandbox", () => {
@@ -83,7 +84,10 @@ describe("Kestrel in a sandbox", () => {
   it("serves a seeded post's archive page, its cover image and the logo", async () => {
     const { body } = await me.json<{ posts: PostRow[] }>("/api/posts?status=sent");
     const srcs = new Set<string>();
-    for (const post of body.posts) {
+    // An email-only post (since v1.12.0 the seed opens with one) has no archive page.
+    const listed = body.posts.filter((p) => !p.email_only);
+    expect(listed.length).toBeGreaterThan(0);
+    for (const post of listed) {
       const page = await me.fetch(`/archive/${post.slug}`);
       expect(page.status).toBe(200);
       for (const m of (await page.text()).matchAll(/<img[^>]+src="([^"]*\/media\/[^"]+)"/g)) {

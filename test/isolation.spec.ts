@@ -5,7 +5,8 @@
 //
 // A list imported in one sandbox (since Kestrel v1.9.0) is likewise absent from another's
 // export and subscriber list, and a block or an erasure (since v1.10.0) suppresses the
-// address in its own sandbox only.
+// address in its own sandbox only. An email-only post's unlisted link (since v1.12.0) is
+// likewise its own sandbox's page and nothing in another.
 //
 // Related tests elsewhere: an upload in one sandbox 404s in another at the same path, and a
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
@@ -121,6 +122,56 @@ describe("a post published in one sandbox", () => {
   });
 });
 
+describe("an email-only post's unlisted link", () => {
+  const a = visitor();
+  const b = visitor();
+  const marker = `${MARKER}-unlisted`;
+  let token = "";
+
+  beforeAll(async () => {
+    const slug = await publish(a, {
+      subject: `Email only in A ${marker}`,
+      slug: marker,
+      markdown: `# Email only in A\n\nThe body says ${marker}.`,
+    });
+    const id = await runInDurableObject(await a.sandbox(), (_i, state) =>
+      String(
+        state.storage.sql.exec<{ id: string }>("SELECT id FROM posts WHERE slug = ?", slug).one()
+          .id,
+      ),
+    );
+    const settings = await a.fetch(`/api/posts/${id}/settings`, {
+      method: "PUT",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ email_only: true }),
+    });
+    expect(settings.status).toBe(200);
+    await settings.arrayBuffer();
+    const read = await a.json<{ post: { unlisted_token: string } }>(`/api/posts/${id}`);
+    token = read.body.post.unlisted_token;
+    await b.fetch("/api/posts"); // B has a sandbox of its own
+  });
+
+  it("is the post's page in its own sandbox", async () => {
+    expect(token).toMatch(/\S/);
+    const page = await a.fetch(`/email/${token}`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain(marker);
+  });
+
+  it("answers nothing of it in another sandbox, or for a visitor with no cookie", async () => {
+    const other = await b.fetch(`/email/${token}`);
+    expect(other.status).toBe(404);
+    expect(await other.text()).not.toContain(marker);
+    const fresh = await SELF.fetch(`${BASE}/email/${token}`, {
+      headers: { "cf-connecting-ip": "198.51.100.202" },
+      redirect: "manual",
+    });
+    expect(fresh.status).toBe(404);
+    expect(await fresh.text()).not.toContain(marker);
+  });
+});
+
 describe("a list imported in one sandbox", () => {
   const a = visitor();
   const b = visitor();
@@ -128,7 +179,10 @@ describe("a list imported in one sandbox", () => {
 
   beforeAll(async () => {
     await a.fetch("/api/posts"); // a session first: a cookieless write starts none
-    const imported = await importList(a, { name: "list.txt", text: `${address}\r\n` });
+    const imported = await importList(a, {
+      name: "list.txt",
+      text: `${address}\r\n`,
+    });
     expect(imported.status).toBe(201);
     await b.fetch("/api/posts"); // B has a sandbox of its own
   });
@@ -223,7 +277,7 @@ describe("noindex", () => {
     const paths = [
       "/api/posts", // API JSON, from a sandbox
       `/archive/${seededSlug}`, // a public HTML page
-      "/media/posts/5eed0001-0000-4000-8000-000000000001/kestrel.webp", // media
+      "/media/posts/5eed0002-0000-4000-8000-000000000002/kestrel.webp", // media
       "/no-such-page", // Kestrel's 404
       "/dashboard/missing.js", // the Worker's own 404 for an asset path
       "/health",
