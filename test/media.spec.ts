@@ -51,7 +51,7 @@ async function aDraft(v: Visitor): Promise<string> {
   return id;
 }
 
-const COVER = "/media/posts/5eed0001-0000-4000-8000-000000000001/kestrel.webp";
+const COVER = "/media/posts/5eed0002-0000-4000-8000-000000000002/kestrel.webp";
 
 describe("seed images", () => {
   it("are served in every sandbox from one shared copy", async () => {
