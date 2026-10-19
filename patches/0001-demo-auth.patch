@@ -1,11 +1,11 @@
-Demo auth (kurtbruns/demo.getkestrel.dev#2, regenerated for Kestrel 1.7.0 in #31)
+Demo auth (kurtbruns/demo.getkestrel.dev#2, regenerated for Kestrel 1.7.0 in #31 and for 1.13.0)
 
 What: `authenticate` (src/auth/middleware.ts) returns a fixed human principal,
 demo@getkestrel.dev, for every request, without consulting Access or the dev token. Its
 `via` is "demo": the principal's `via` union (src/router.ts) and the auth-mode types that
-carry it (`authMode` in shared/settings.ts, the client's session and curl snippet) accept
+carry it (`auth_mode` in shared/settings.ts, the client's session and curl snippet) accept
 "demo". Since Kestrel 1.7.0, `GET /api/whoami`'s `auth.mode` and the settings reflection's
-`authMode` report the principal's `via`, so both say "demo" with no change of their own.
+`auth_mode` report the principal's `via`, so both say "demo" with no change of their own.
 The curl snippet shows no credential headers in demo mode, and the settings Auth mode row
 reads "Demo sandbox (no sign-in)".
 
@@ -19,11 +19,11 @@ stay absent; admin writes still refuse cross-site requests; admin responses stay
 See DESIGN.md, "Auth" and "The patch set".
 
 diff --git a/client/room/curl.ts b/client/room/curl.ts
-index c013081..37975eb 100644
+index fd1f393..426d01b 100644
 --- a/client/room/curl.ts
 +++ b/client/room/curl.ts
-@@ -4,13 +4,17 @@
- import type { ReferenceEntry } from "../../shared/reference";
+@@ -5,13 +5,17 @@
+ import { concretePath, type ReferenceEntry } from "../../shared/reference";
  
  /** How this instance authenticates the admin tier, as the boot probe reported it. */
 -export type AuthMode = "access" | "dev";
@@ -42,44 +42,44 @@ index c013081..37975eb 100644
      ? [
          '-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"',
 diff --git a/client/settings/deploy.ts b/client/settings/deploy.ts
-index 8df3e26..dceb9fc 100644
+index b34724d..607285c 100644
 --- a/client/settings/deploy.ts
 +++ b/client/settings/deploy.ts
 @@ -89,7 +89,7 @@ export function instanceSection(page: SettingsPage): Html {
-           <div class="set-kv-k">App origin</div><div class="set-kv-v"><span class="mono">${d.appOrigin}</span></div>
+           <div class="set-kv-k">App origin</div><div class="set-kv-v"><span class="mono">${d.app_origin}</span></div>
            <div class="set-kv-k">Archive URL base</div><div class="set-kv-v"><span class="mono">${archiveBase}</span>${archiveIsDefault ? html`<span class="set-pill">default: app origin</span>` : null}</div>
-           <div class="set-kv-k">Image URL base</div><div class="set-kv-v"><span class="mono">${d.mediaPublicBase}</span></div>
--          <div class="set-kv-k">Auth mode</div><div class="set-kv-v">${d.authMode === "access" ? "Cloudflare Access" : "Local dev token"}</div>
-+          <div class="set-kv-k">Auth mode</div><div class="set-kv-v">${d.authMode === "access" ? "Cloudflare Access" : d.authMode === "demo" ? "Demo sandbox (no sign-in)" : "Local dev token"}</div>
-           <div class="set-kv-k">Cloudflare Access</div><div class="set-kv-v">${d.accessConfigured ? html`<span class="set-pill ok">${icon("check")}Configured</span>` : html`<span class="set-pill">Not configured</span>`}</div>
-           <div class="set-kv-k">Minimum lead</div><div class="set-kv-v">${formatLead(d.minLeadMs)}${d.minLeadMs === DEFAULT_MIN_LEAD_MS ? html`<span class="set-pill">default</span>` : null}</div>
+           <div class="set-kv-k">Image URL base</div><div class="set-kv-v"><span class="mono">${d.media_public_base}</span></div>
+-          <div class="set-kv-k">Auth mode</div><div class="set-kv-v">${d.auth_mode === "access" ? "Cloudflare Access" : "Local dev token"}</div>
++          <div class="set-kv-k">Auth mode</div><div class="set-kv-v">${d.auth_mode === "access" ? "Cloudflare Access" : d.auth_mode === "demo" ? "Demo sandbox (no sign-in)" : "Local dev token"}</div>
+           <div class="set-kv-k">Cloudflare Access</div><div class="set-kv-v">${d.access_configured ? html`<span class="set-pill ok">${icon("check")}Configured</span>` : html`<span class="set-pill">Not configured</span>`}</div>
+           <div class="set-kv-k">Minimum lead</div><div class="set-kv-v">${formatLead(d.min_lead_ms)}${d.min_lead_ms === DEFAULT_MIN_LEAD_MS ? html`<span class="set-pill">default</span>` : null}</div>
          </div>
 diff --git a/client/state.ts b/client/state.ts
-index 754928f..ff565d3 100644
+index 66ee072..6a7b30e 100644
 --- a/client/state.ts
 +++ b/client/state.ts
 @@ -7,7 +7,7 @@ import type { SettingsResponse } from "../shared/settings";
  /** The boot probe's answer (GET /api/whoami): who we are and which auth mode gates this surface. */
  export interface Session {
-   principal: { kind: "human" | "service"; email?: string; tokenId?: string };
+   principal: { kind: "human" | "service"; email?: string; token_id?: string };
 -  auth: { mode: "access" | "dev" };
 +  auth: { mode: "access" | "dev" | "demo" };
  }
  
  export interface AppState {
 diff --git a/shared/settings.ts b/shared/settings.ts
-index 82329e7..90715ec 100644
+index 11cc10f..1549038 100644
 --- a/shared/settings.ts
 +++ b/shared/settings.ts
-@@ -97,7 +97,7 @@ export interface DeploymentView {
-   awsRegion: string;
-   accessConfigured: boolean;
+@@ -98,7 +98,7 @@ export interface DeploymentView {
+   aws_region: string;
+   access_configured: boolean;
    /** How the reader of this reflection signed in: through Access, or with the local dev token. */
--  authMode: "access" | "dev";
-+  authMode: "access" | "dev" | "demo";
+-  auth_mode: "access" | "dev";
++  auth_mode: "access" | "dev" | "demo";
    build: BuildInfo;
    /** How notifications reach the publisher: Cloudflare's own email, the newsletter's provider, or the dev fake that delivers nothing. */
-   notifyChannel: "cloudflare" | "provider" | "fake";
+   notify_channel: "cloudflare" | "provider" | "fake";
 diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
 index b7c121b..8fde77d 100644
 --- a/src/auth/middleware.ts
@@ -134,10 +134,10 @@ index b7c121b..8fde77d 100644
  
  /**
 diff --git a/src/router.ts b/src/router.ts
-index c271a12..c4402df 100644
+index 1f9bab9..f1afd67 100644
 --- a/src/router.ts
 +++ b/src/router.ts
-@@ -43,7 +43,7 @@ export interface Principal {
+@@ -55,7 +55,7 @@ export interface Principal {
    tokenId?: string;
    /** How this request authenticated: a Cloudflare Access assertion, or the local dev token.
     *  What `auth.mode` reports, so it says how the caller got in rather than what is configured. */

@@ -33,12 +33,17 @@ declare const kestrel: {
 };
 export default kestrel;
 
+/** The refusal codes the demo throws. Since Kestrel 1.13.0 an `HttpError`'s status is read
+ *  from its code in Kestrel's registry (src/reference/refusals.ts), so each must be listed
+ *  there: one that isn't has no status, and the router would answer it as a 200. */
+export type RefusalCode = "bad_request" | "body_too_large" | "not_found";
+
 /** src/lib/errors.ts: thrown anywhere in a request, Kestrel's router answers it as
- *  `{ error: code, message }` with this status. */
+ *  `{ error: code, message }` with the status its code has in the registry. */
 export class HttpError extends Error {
-  constructor(status: number, code: string, message?: string, details?: Record<string, unknown>);
+  constructor(code: RefusalCode, message?: string, details?: Record<string, unknown>);
   readonly status: number;
-  readonly code: string;
+  readonly code: RefusalCode;
 }
 
 /** src/env.ts: resolve and validate config from `env`; throws on config that would run wrong. */
@@ -58,8 +63,8 @@ export interface SeedSummary {
   audience: number;
   posts: { sent: number; scheduled: number; draft: number };
   deliveries: number;
-  imagesWritten: number;
-  logoWritten: boolean;
+  images_written: number;
+  logo_written: boolean;
   urls: { archive: string[]; admin: string };
 }
 
@@ -87,7 +92,11 @@ export function deliverToOutbox(
     batchKey?: string;
   },
 ): { email: string; accepted: true; providerId: string }[];
-export function fakeOutbox(): readonly ({ to: string; providerId: string } & FakeEmail)[];
+export function fakeOutbox(): readonly ({
+  to: string;
+  provider_id: string;
+  sent_at: number;
+} & FakeEmail)[];
 export class FakeNotifier {
   send(to: string, message: FakeEmail, key: string): Promise<void>;
 }

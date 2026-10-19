@@ -389,8 +389,8 @@ describe("Kestrel on the adapter", () => {
       expect(summary.posts.sent).toBeGreaterThan(0);
       expect(summary.posts.draft).toBeGreaterThan(0);
       expect(summary.subscribers.confirmed).toBeGreaterThan(100);
-      expect(summary.imagesWritten).toBe(demoImages.length);
-      expect(summary.logoWritten).toBe(true);
+      expect(summary.images_written).toBe(demoImages.length);
+      expect(summary.logo_written).toBe(true);
       const posts = await db.prepare("SELECT count(*) AS n FROM posts").first<number>("n");
       expect(posts).toBe(summary.posts.sent + summary.posts.scheduled + summary.posts.draft);
     });

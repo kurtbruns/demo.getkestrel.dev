@@ -319,7 +319,7 @@ export class SandboxDO extends DurableObject<Env> {
       if (declared > MAX_UPLOAD_REQUEST_BYTES) {
         return Response.json(
           {
-            error: "upload_too_large",
+            error: "body_too_large",
             message: `an upload must be ${MAX_OBJECT_BYTES / 1024 / 1024} MB or smaller`,
           },
           { status: 413 },
