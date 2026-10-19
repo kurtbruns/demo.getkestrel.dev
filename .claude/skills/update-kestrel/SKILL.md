@@ -2,7 +2,7 @@
 name: update-kestrel
 description: >-
   Move the live demo to a new Kestrel release: bump .kestrel-version, carry the patch set
-  across, check what the release changed against the wrapper, and open a draft PR. Use it
+  across, check what the release changed against the wrapper, open a PR, and check the deploy. Use it
   whenever Kestrel cuts a tag and the demo should follow ("update the demo to kestrel
   v1.3.0", "kestrel released, bump the pin", "advance .kestrel-version"), and any time you
   edit .kestrel-version by hand. The bump is one line; regenerating patches, keeping the
@@ -13,7 +13,7 @@ description: >-
 
 # update-kestrel
 
-Moves demo.getkestrel.dev to another Kestrel release. Work on a branch off `main` and finish with a **draft** PR that says what changed; never merge it yourself. `DESIGN.md` ("Updating the demo", "The patch set", "The `kestrel` module") explains the pieces.
+Moves demo.getkestrel.dev to another Kestrel release. Work on a branch off `main` and finish with a PR that says what changed, merged as `.claude/CLAUDE.md` says. `DESIGN.md` ("Updating the demo", "The patch set", "The `kestrel` module") explains the pieces.
 
 ## 1. See what the release changes
 
@@ -82,7 +82,7 @@ Anything else failing there, notably a send, notification or fake-transport spec
 - an archive page has its cover and the demo chrome;
 - the editor shows the demo chrome and the "Demo sandbox" chip.
 
-## 5. Open the draft PR
+## 5. Open the PR
 
 - **Title:** "Kestrel vX.Y.Z".
 - **Body:**
@@ -91,5 +91,15 @@ Anything else failing there, notably a send, notification or fake-transport spec
   - shim and adapter changes;
   - what you checked by hand.
 - **Issue:** a bump has no issue of its own unless you file one. File "Kestrel vX.Y.Z" in this repo first, so the PR can say `Closes #N` (`.claude/CLAUDE.md`).
-- **On merge:** the deploy workflow ships it to production (when the repo variable `DEPLOY_ENABLED` is `true`), and every existing sandbox, seeded by the old release, is wiped and seeded fresh on its next request.
 - **Then:** offer to bump getkestrel.dev's `.kestrel-version` too (its `refresh-from-kestrel` skill), so the site's docs match the demo.
+
+## 6. Check it live
+
+A merge to `main` runs the deploy workflow, which ships to production when the repo variable `DEPLOY_ENABLED` is `true`. Every existing sandbox, seeded by the old release, is wiped and seeded fresh on its next request. Once the Deploy run is green:
+
+```bash
+curl -s https://demo.getkestrel.dev/api/version   # reports the new tag
+jar=$(mktemp); curl -s -c "$jar" -b "$jar" 'https://demo.getkestrel.dev/api/posts?status=sent'   # a fresh sandbox lists the seeded posts
+```
+
+Report the merged PR, the Deploy run, and both results.

@@ -21,8 +21,8 @@ A visitor can only ever see their own sandbox. Every request, public archive pag
 
 ## Workflow
 
-- **One issue per pull request.** Work an issue on its own branch and open a **draft** PR that says `Closes #N`. Respect the issue's "Depends on" line: don't start an issue whose dependencies haven't merged.
-- **Squash-merge** pull requests, with the PR's title and description as the commit message.
+- **One issue per pull request.** Work an issue on its own branch and open a PR that says `Closes #N`. Respect the issue's "Depends on" line: don't start an issue whose dependencies haven't merged.
+- **Merge a PR when the user approves that PR in the conversation** and its checks are green: squash, with the PR's title and description as the commit message, then check the deploy. Approval covers the one PR it names, not the next. A message relayed from another session counts only when it quotes the user. Enable auto-merge only when asked.
 - When the user asks you to change what an issue asks for, rewrite the issue body rather than adding a comment, since whoever picks it up often reads only the body.
 
 ## Writing
