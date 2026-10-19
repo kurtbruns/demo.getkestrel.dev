@@ -22,10 +22,10 @@ async function sandboxPrefix(v: Visitor): Promise<string> {
 
 /** The path of the logo `v`'s publication shows now, or "" with none. */
 async function logoPath(v: Visitor): Promise<string> {
-  const { body } = await v.json<{ settings: { publication: { logoUrl: string } } }>(
+  const { body } = await v.json<{ settings: { publication: { logo_url: string } } }>(
     "/api/settings",
   );
-  const url = body.settings.publication.logoUrl;
+  const url = body.settings.publication.logo_url;
   return url ? new URL(url).pathname : "";
 }
 
@@ -119,7 +119,7 @@ describe("uploads", () => {
     const draft = await aDraft(a);
     const res = await upload(a, draft, "big.png", new Uint8Array(MAX_OBJECT_BYTES + 1));
     expect(res.status).toBe(413);
-    expect(((await res.json()) as { error: string }).error).toBe("upload_too_large");
+    expect(((await res.json()) as { error: string }).error).toBe("body_too_large");
     expect(await keysUnder(await sandboxPrefix(a))).toEqual([]);
     expect((await a.fetch(`/media/posts/${draft}/big.png`)).status).toBe(404);
   });
@@ -241,7 +241,7 @@ describe("hardening", () => {
     const draft = await aDraft(v);
     const big = await upload(v, draft, "big.png", new Uint8Array(MAX_OBJECT_BYTES + 300 * 1024));
     expect(big.status).toBe(413);
-    expect(((await big.json()) as { error: string }).error).toBe("upload_too_large");
+    expect(((await big.json()) as { error: string }).error).toBe("body_too_large");
     const unsized = await v.fetch(`/api/posts/${draft}/images?filename=s.png`, {
       method: "POST",
       headers: { ...SAME_ORIGIN, "content-type": "image/png" },

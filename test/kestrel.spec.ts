@@ -129,19 +129,19 @@ describe("Kestrel in a sandbox", () => {
     const { status, body } = await me.json<{
       deployment: {
         provider: string;
-        accessConfigured: boolean;
-        authMode: string;
-        freePlanLimits: boolean;
+        access_configured: boolean;
+        auth_mode: string;
+        free_plan_limits: boolean;
       };
     }>("/api/settings");
     expect(status).toBe(200);
     expect(body.deployment).toMatchObject({
       provider: "fake",
-      accessConfigured: false,
-      authMode: "demo",
+      access_configured: false,
+      auth_mode: "demo",
       // SUBREQUEST_BUDGET is above Workers Free's default, so no warnings about D1's daily
       // writes, which a sandbox's SQLite doesn't have.
-      freePlanLimits: false,
+      free_plan_limits: false,
     });
   });
 
@@ -165,7 +165,7 @@ describe("Kestrel in a sandbox", () => {
     expect(over.body).toMatchObject({ error: "too_many_rows", limit: 1_000 });
     const at = await plan(1_000);
     expect(at.status).toBe(200);
-    expect(at.body.counts?.create_confirmed).toBe(1_000);
+    expect(at.body.counts?.added_confirmed).toBe(1_000);
   });
 
   it("imports a list through the adapter and exports it back", async () => {
@@ -173,7 +173,7 @@ describe("Kestrel in a sandbox", () => {
       name: "list.csv",
       text: "email,status,opt_in,origin\r\nimported-ada@example.com,subscribed,double,sendy\r\nimported-edsger@example.com,unsubscribed,unknown,sendy\r\n",
     });
-    expect(imported.counts).toMatchObject({ create_confirmed: 1, create_unsubscribed: 1 });
+    expect(imported.counts).toMatchObject({ added_confirmed: 1, added_unsubscribed: 1 });
     expect(imported.status).toBe(201);
 
     const exported = await exportList(me);
@@ -226,14 +226,17 @@ describe("Kestrel in a sandbox", () => {
       );
     const before = await records();
 
-    const erased = await me.json<{
-      erased: { email: string; deliveries: number; suppression: string };
-    }>(`/api/subscribers/${reader.id}/erase`, { method: "POST", headers: NO_BODY });
+    type Erased = { email: string; status: string; unsubscribe_cause: string | null };
+    const erased = await me.json<{ subscriber: Erased; deliveries: number }>(
+      `/api/subscribers/${reader.id}/erase`,
+      { method: "POST", headers: NO_BODY },
+    );
     expect(erased.status, JSON.stringify(erased.body)).toBe(200);
-    expect(erased.body.erased).toEqual({
+    expect(erased.body.deliveries).toBe(reader.mailed);
+    expect(erased.body.subscriber).toMatchObject({
       email: reader.email,
-      deliveries: reader.mailed,
-      suppression: "erased",
+      status: "unsubscribed",
+      unsubscribe_cause: "erased",
     });
 
     // The record still adds up: the same audience and buckets, with an erased recipient in
@@ -247,17 +250,24 @@ describe("Kestrel in a sandbox", () => {
       ),
     );
     expect(left).toBe(0);
-    const gone = await me.fetch(`/api/subscribers?email=${encodeURIComponent(reader.email)}`);
-    expect(gone.status).toBe(404);
-    await gone.arrayBuffer();
-
-    // Only the person's own confirmation lifts the do-not-contact marker.
-    const cleared = await me.json<{ error: string }>(
-      `/api/suppressions/${encodeURIComponent(reader.email)}`,
-      { method: "DELETE", headers: NO_BODY },
+    // What's left is the address, unsubscribed by the erasure.
+    const remains = await me.json<{ subscriber: Erased }>(
+      `/api/subscribers?email=${encodeURIComponent(reader.email)}`,
     );
-    expect(cleared.status).toBe(409);
-    expect(cleared.body.error).toBe("erasure_marker");
+    expect(remains.status).toBe(200);
+    expect(remains.body.subscriber).toMatchObject({
+      status: "unsubscribed",
+      unsubscribe_cause: "erased",
+    });
+
+    // Only the person's own sign-up brings them back: the publisher can't re-add them.
+    const readd = await me.json<{ error: string }>("/api/subscribers", {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ email: reader.email }),
+    });
+    expect(readd.status).toBe(409);
+    expect(readd.body.error).toBe("signup_required");
   });
 
   it("saves a same-origin draft edit, which persists", async () => {

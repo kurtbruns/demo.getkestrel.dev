@@ -209,9 +209,9 @@ describe("a block or an erasure in one sandbox", () => {
   let erased = "";
 
   const lookup = (v: Visitor, email: string) =>
-    v.json<{ subscriber?: { status: string }; suppressed?: boolean }>(
-      `/api/subscribers?email=${encodeURIComponent(email)}`,
-    );
+    v.json<{
+      subscriber?: { status: string; unsubscribe_cause: string | null; suppression: object | null };
+    }>(`/api/subscribers?email=${encodeURIComponent(email)}`);
 
   beforeAll(async () => {
     await a.fetch("/api/posts");
@@ -248,23 +248,26 @@ describe("a block or an erasure in one sandbox", () => {
   });
 
   it("suppresses the address in its own sandbox only", async () => {
-    // A positive control: in A, the block holds and the erased reader is gone.
-    expect((await lookup(a, blocked)).body.suppressed).toBe(true);
-    expect((await lookup(a, erased)).status).toBe(404);
+    // A positive control: in A, the block holds and the erased reader is unsubscribed by it.
+    expect((await lookup(a, blocked)).body.subscriber?.suppression).not.toBeNull();
+    expect((await lookup(a, erased)).body.subscriber).toMatchObject({
+      status: "unsubscribed",
+      unsubscribe_cause: "erased",
+    });
     for (const email of [blocked, erased]) {
       const other = await lookup(b, email);
       expect(other.status, email).toBe(200);
       expect(other.body.subscriber?.status, email).toBe("confirmed");
-      expect(other.body.suppressed, email).toBe(false);
+      expect(other.body.subscriber?.suppression, email).toBeNull();
+      expect(other.body.subscriber?.unsubscribe_cause, email).toBeNull();
     }
     const own = await a.fetch("/api/suppressions");
     const ownText = await own.text();
     const theirs = await b.fetch("/api/suppressions");
     const theirsText = await theirs.text();
-    for (const email of [blocked, erased]) {
-      expect(ownText, email).toContain(email);
-      expect(theirsText, email).not.toContain(email);
-    }
+    // Since Kestrel 1.13.0 an erasure isn't a suppression, so only the block is listed.
+    expect(ownText).toContain(blocked);
+    expect(theirsText).not.toContain(blocked);
   });
 });
 

@@ -13,7 +13,7 @@
  * tombstone, so a deleted seed image (a deleted post's cover) stays deleted for that sandbox.
  *
  * Uploads are capped per object and per sandbox, with the byte count and tombstones kept in
- * the sandbox's own SQLite. Over a cap, `put` throws Kestrel's own `HttpError(413)`, which
+ * the sandbox's own SQLite. Over a cap, `put` throws Kestrel's own `HttpError` (`body_too_large`, a 413), which
  * Kestrel's router answers as a 413 with its usual error body, and nothing is written. The
  * size is reserved before the bytes go to R2, so uploads running in parallel (a DO serves
  * other requests while it awaits R2) can't pass the cap together.
@@ -37,7 +37,7 @@ export const MAX_SANDBOX_BYTES = 20 * 1024 * 1024;
 
 export class MediaQuotaError extends HttpError {
   constructor(message: string) {
-    super(413, "upload_too_large", message);
+    super("body_too_large", message);
     this.name = "MediaQuotaError";
   }
 }
@@ -74,8 +74,8 @@ function checkKey(key: string, status: 400 | 404): string {
     key.split("/").some((s) => s === "" || s === "." || s === "..")
   ) {
     throw status === 404
-      ? new HttpError(404, "not_found", "media not found")
-      : new HttpError(400, "bad_media_key", `media key refused: ${JSON.stringify(key)}`);
+      ? new HttpError("not_found", "media not found")
+      : new HttpError("bad_request", `media key refused: ${JSON.stringify(key)}`);
   }
   return key;
 }
@@ -239,7 +239,7 @@ export class SandboxMedia {
   async list(options: R2ListOptions = {}): Promise<R2Objects> {
     const prefix = options.prefix ?? "";
     if (prefix.startsWith("/") || prefix.split("/").some((s) => s === "." || s === "..")) {
-      throw new HttpError(400, "bad_media_key", `media prefix refused: ${JSON.stringify(prefix)}`);
+      throw new HttpError("bad_request", `media prefix refused: ${JSON.stringify(prefix)}`);
     }
     const listed = await this.bucket.list({ ...options, prefix: this.sessionPrefix + prefix });
     return {

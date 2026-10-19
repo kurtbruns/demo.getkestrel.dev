@@ -16,10 +16,10 @@ in the sandbox's SQLite).
 See DESIGN.md, "Module-level state in Kestrel" and "The patch set".
 
 diff --git a/src/notify/fake.ts b/src/notify/fake.ts
-index 19fc84d..8baeacc 100644
+index ad9a9f2..84bc0dd 100644
 --- a/src/notify/fake.ts
 +++ b/src/notify/fake.ts
-@@ -19,6 +19,9 @@ export interface FakeNotification {
+@@ -20,6 +20,9 @@ export interface FakeNotification {
  }
  
  const outbox: FakeNotification[] = [];
@@ -29,21 +29,21 @@ index 19fc84d..8baeacc 100644
  let failCount = 0;
  
  export function fakeNotifications(): readonly FakeNotification[] {
-@@ -43,6 +46,9 @@ export class FakeNotifier implements Notifier {
+@@ -44,6 +47,9 @@ export class FakeNotifier implements Notifier {
        failCount -= 1;
        throw new Error("fake notification failure");
      }
 +    if (outbox.length >= OUTBOX_LIMIT) {
 +      outbox.shift();
 +    }
-     outbox.push({ to, ...message, key, sentAt: Date.now() });
+     outbox.push({ to, ...message, key, sent_at: Date.now() });
    }
  }
 diff --git a/src/providers/fake.ts b/src/providers/fake.ts
-index a38c9be..d577928 100644
+index 603d987..adfdf4b 100644
 --- a/src/providers/fake.ts
 +++ b/src/providers/fake.ts
-@@ -35,6 +35,13 @@ export interface FakeMessage {
+@@ -36,6 +36,13 @@ export interface FakeMessage {
  
  const outbox: FakeMessage[] = [];
  const sentKeys = new Map<string, string>(); // batch key + address -> providerId
@@ -57,7 +57,7 @@ index a38c9be..d577928 100644
  let failCount = 0;
  
  export function fakeOutbox(): readonly FakeMessage[] {
-@@ -75,6 +82,12 @@ export function deliverToOutbox(
+@@ -76,6 +83,12 @@ export function deliverToOutbox(
        ".Email.SentTo": r.email,
      });
      sentKeys.set(key, providerId);
