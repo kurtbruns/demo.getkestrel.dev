@@ -13,10 +13,10 @@
  * tombstone, so a deleted seed image (a deleted post's cover) stays deleted for that sandbox.
  *
  * Uploads are capped per object and per sandbox, with the byte count and tombstones kept in
- * the sandbox's own SQLite. Over a cap, `put` throws Kestrel's own `HttpError` (`body_too_large`, a 413), which
- * Kestrel's router answers as a 413 with its usual error body, and nothing is written. The
- * size is reserved before the bytes go to R2, so uploads running in parallel (a DO serves
- * other requests while it awaits R2) can't pass the cap together.
+ * the sandbox's own SQLite. Over a cap, `put` throws Kestrel's own `HttpError` with the code
+ * `body_too_large`, which Kestrel's router answers as a 413 with its usual error body, and
+ * nothing is written. The size is reserved before the bytes go to R2, so uploads running in
+ * parallel (a DO serves other requests while it awaits R2) can't pass the cap together.
  *
  * Kestrel uses `get`, `put` (with `httpMetadata`) and `delete`; `head` and `list` are here
  * for the demo's own use, and `list` stays inside the sandbox's prefix.
