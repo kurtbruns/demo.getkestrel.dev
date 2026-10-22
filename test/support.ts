@@ -53,12 +53,18 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
   return v;
 }
 
-/** Headers for a write the editor itself would send. */
-export const SAME_ORIGIN = { "content-type": "application/json", "sec-fetch-site": "same-origin" };
+/** Headers for a write the editor itself would send. Since Kestrel 1.14.0 the editor names
+ *  itself as the client on every call, and only a commit through the editor may grow a
+ *  scheduled send's audience, so the tests send it too. */
+export const SAME_ORIGIN = {
+  "content-type": "application/json",
+  "sec-fetch-site": "same-origin",
+  "kestrel-client": "editor",
+};
 
 /** Headers for a same-origin write that takes no body, such as Erase: Kestrel refuses a
  *  Content-Type on one (415). */
-export const NO_BODY = { "sec-fetch-site": "same-origin" };
+export const NO_BODY = { "sec-fetch-site": "same-origin", "kestrel-client": "editor" };
 
 /**
  * Publish a new post in `v`'s sandbox the way the editor would (create, schedule at the
