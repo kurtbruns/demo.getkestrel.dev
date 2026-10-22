@@ -189,6 +189,23 @@ describe("hardening", () => {
     }
   });
 
+  it("answers Kestrel's MCP server only inside a session", async () => {
+    // Since Kestrel 1.14.0, /api/mcp is a connector's door. A connector's servers carry no
+    // demo cookie, so the Worker refuses them before any sandbox is chosen.
+    const res = await SELF.fetch(`${BASE}/api/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://claude.ai",
+        "cf-connecting-ip": "198.51.100.151",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(((await res.json()) as { error: string }).error).toBe("no_session");
+  });
+
   it("starts no session for /favicon.ico", async () => {
     const res = await SELF.fetch(`${BASE}/favicon.ico`);
     expect(res.status).toBe(404);

@@ -36,12 +36,17 @@ describe("Kestrel in a sandbox", () => {
 
   it("reports the demo principal and auth mode", async () => {
     const { status, body } = await me.json<{
-      principal: { kind: string; email: string };
+      principal: { kind: string; email: string; client: string | null };
       auth: { mode: string };
     }>("/api/whoami");
     expect(status).toBe(200);
     expect(body.auth.mode).toBe("demo");
-    expect(body.principal).toEqual({ kind: "human", email: "demo@getkestrel.dev" });
+    // A request that names no client reads as made through the API (Kestrel 1.14.0).
+    expect(body.principal).toEqual({ kind: "human", email: "demo@getkestrel.dev", client: null });
+    const fromEditor = await me.json<{ principal: { client: string | null } }>("/api/whoami", {
+      headers: { "kestrel-client": "editor" },
+    });
+    expect(fromEditor.body.principal.client).toBe("editor");
   });
 
   it("keeps Kestrel's dev routes absent", async () => {

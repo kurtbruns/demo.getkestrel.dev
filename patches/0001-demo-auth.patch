@@ -1,10 +1,14 @@
-Demo auth (kurtbruns/demo.getkestrel.dev#2, regenerated for Kestrel 1.7.0 in #31 and for 1.13.0)
+Demo auth (kurtbruns/demo.getkestrel.dev#2, regenerated for Kestrel 1.7.0 in #31, for 1.13.0, and for 1.14.0)
 
 What: `authenticate` (src/auth/middleware.ts) returns a fixed human principal,
 demo@getkestrel.dev, for every request, without consulting Access or the dev token. Its
 `via` is "demo": the principal's `via` union (src/router.ts) and the auth-mode types that
-carry it (`auth_mode` in shared/settings.ts, the client's session and curl snippet) accept
-"demo". Since Kestrel 1.7.0, `GET /api/whoami`'s `auth.mode` and the settings reflection's
+carry it (`auth_mode` in shared/settings.ts, whoami's `auth.mode` in shared/who_acted.ts,
+which the client's session is, and the curl snippet) accept "demo". `authenticate` keeps
+Kestrel's return type (`Principal | "access_unidentified" | null`) though it only ever
+returns the principal, since `requireAuth` tests for the other two. The principal names no
+client, so `requireAuth` adds the request's `Kestrel-Client` header to it as it does for
+any person. Since Kestrel 1.7.0, `GET /api/whoami`'s `auth.mode` and the settings reflection's
 `auth_mode` report the principal's `via`, so both say "demo" with no change of their own.
 The curl snippet shows no credential headers in demo mode, and the settings Auth mode row
 reads "Demo sandbox (no sign-in)".
@@ -54,19 +58,6 @@ index b34724d..607285c 100644
            <div class="set-kv-k">Cloudflare Access</div><div class="set-kv-v">${d.access_configured ? html`<span class="set-pill ok">${icon("check")}Configured</span>` : html`<span class="set-pill">Not configured</span>`}</div>
            <div class="set-kv-k">Minimum lead</div><div class="set-kv-v">${formatLead(d.min_lead_ms)}${d.min_lead_ms === DEFAULT_MIN_LEAD_MS ? html`<span class="set-pill">default</span>` : null}</div>
          </div>
-diff --git a/client/state.ts b/client/state.ts
-index 66ee072..6a7b30e 100644
---- a/client/state.ts
-+++ b/client/state.ts
-@@ -7,7 +7,7 @@ import type { SettingsResponse } from "../shared/settings";
- /** The boot probe's answer (GET /api/whoami): who we are and which auth mode gates this surface. */
- export interface Session {
-   principal: { kind: "human" | "service"; email?: string; token_id?: string };
--  auth: { mode: "access" | "dev" };
-+  auth: { mode: "access" | "dev" | "demo" };
- }
- 
- export interface AppState {
 diff --git a/shared/settings.ts b/shared/settings.ts
 index 11cc10f..1549038 100644
 --- a/shared/settings.ts
@@ -80,12 +71,23 @@ index 11cc10f..1549038 100644
    build: BuildInfo;
    /** How notifications reach the publisher: Cloudflare's own email, the newsletter's provider, or the dev fake that delivers nothing. */
    notify_channel: "cloudflare" | "provider" | "fake";
+diff --git a/shared/who_acted.ts b/shared/who_acted.ts
+index 7603bbe..c4af75e 100644
+--- a/shared/who_acted.ts
++++ b/shared/who_acted.ts
+@@ -48,5 +48,5 @@ export interface Actor {
+ /** GET /api/whoami: who this request signed in as, and how. */
+ export interface WhoamiResponse {
+   principal: Actor;
+-  auth: { mode: "access" | "dev" };
++  auth: { mode: "access" | "dev" | "demo" };
+ }
 diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
-index b7c121b..8fde77d 100644
+index ee9cfe4..12be85f 100644
 --- a/src/auth/middleware.ts
 +++ b/src/auth/middleware.ts
-@@ -13,32 +13,26 @@
- import type { AppEnv, Config } from "../env";
+@@ -21,32 +21,26 @@ import type { AppEnv, Config } from "../env";
+ import { fieldError } from "../lib/body";
  import { json } from "../lib/errors";
  import type { Middleware, Principal } from "../router";
 -import { ACCESS_JWT_HEADER, verifyAccessJwt } from "./access";
@@ -110,7 +112,7 @@ index b7c121b..8fde77d 100644
    _env: AppEnv,
 -  config: Config,
 +  _config: Config,
- ): Promise<Principal | null> {
+ ): Promise<Principal | "access_unidentified" | null> {
 -  const jwt = req.headers.get(ACCESS_JWT_HEADER);
 -  if (jwt) {
 -    const p = await verifyAccessJwt(jwt, config);
@@ -134,15 +136,15 @@ index b7c121b..8fde77d 100644
  
  /**
 diff --git a/src/router.ts b/src/router.ts
-index 1f9bab9..f1afd67 100644
+index cf2f3eb..ff58419 100644
 --- a/src/router.ts
 +++ b/src/router.ts
-@@ -55,7 +55,7 @@ export interface Principal {
-   tokenId?: string;
+@@ -60,7 +60,7 @@ export interface Principal {
+   client?: string;
    /** How this request authenticated: a Cloudflare Access assertion, or the local dev token.
     *  What `auth.mode` reports, so it says how the caller got in rather than what is configured. */
 -  via: "access" | "dev";
 +  via: "access" | "dev" | "demo";
  }
  
- export interface RequestContext {
+ /** Who acted, as a record keeps it and the API reports it (SPEC §11): the principal's person
