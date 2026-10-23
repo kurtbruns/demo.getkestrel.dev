@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { configDefaults, defineConfig } from "vitest/config";
 
 // The Worker's suite (test/**/*.spec.ts), run inside workerd with the bindings from

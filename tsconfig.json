@@ -13,7 +13,7 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["@cloudflare/vitest-pool-workers/types"],
+    "types": ["@cloudflare/vitest-plugin/types"],
     "paths": {
       "kestrel": ["./src/types/kestrel.d.ts"]
     }
