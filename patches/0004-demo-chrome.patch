@@ -1,4 +1,4 @@
-Demo chrome (kurtbruns/demo.getkestrel.dev#9, revised in #23)
+Demo chrome (kurtbruns/demo.getkestrel.dev#9, revised in #23 and #52)
 
 What: Kestrel's dev-only "Open dashboard" pill, extended into a split pill in the same
 bottom-right corner on every surface. Its inverted tag reads "Demo" and opens a short
@@ -10,7 +10,9 @@ nested step whose Reset button posts to the demo Worker's /_demo/reset; Cancel, 
 and a click outside close what's open. The pill is fixed, so it adds nothing to the
 layout: it steps up over the save bar while it shows, and on a phone the toasts rise
 above it. In the demo's auth mode ("demo", from 0001-demo-auth) the identity chip reads
-"Demo sandbox" with no sign-out link. A client spec covers the editor side.
+"Demo sandbox" with no sign-out link, in the muted italics of Kestrel's own "Local dev"
+marker (its `dev` class), since it says the same kind of thing and does nothing when
+clicked; the accent stays on the pill. A client spec covers the editor side.
 
 Why: a visitor should always know they're in a disposable sandbox, and how to start
 over. #23 replaced #9's full-width strip, which sat at the bottom of the public pages
@@ -38,26 +40,27 @@ client specs pass.
 See DESIGN.md, "Static assets and demo chrome" and "The patch set".
 
 diff --git a/client/auth.ts b/client/auth.ts
-index 4c891ff..e1e563e 100644
+index 00ed5b6..0f0611a 100644
 --- a/client/auth.ts
 +++ b/client/auth.ts
-@@ -39,7 +39,14 @@ export function authHeaders(): Record<string, string> {
+@@ -45,7 +45,15 @@ export function authHeaders(): Record<string, string> {
   */
  export function renderIdentity(): void {
    const session = appState.session;
 -  if (session?.auth.mode === "access") {
 +  if (session?.auth.mode === "demo") {
-+    // Demo sandbox (patched by demo.getkestrel.dev): no sign-in, and no sign-out.
++    // Demo sandbox (patched by demo.getkestrel.dev): no sign-in, and no sign-out. A
++    // marker like "Local dev", so it wears that chip's muted italics, not the accent.
 +    setHtml(
 +      identity,
-+      html`<span class="who demo" title="A private demo sandbox: no sign-in needed">Demo sandbox</span>`,
++      html`<span class="who dev" title="A private demo sandbox: no sign-in needed">Demo sandbox</span>`,
 +    );
 +    renderDemoPill();
 +  } else if (session?.auth.mode === "access") {
      const p = session.principal;
      const who = p.email || (p.kind === "service" ? "Service token" : "Signed in");
      setHtml(
-@@ -54,6 +61,66 @@ export function renderIdentity(): void {
+@@ -60,6 +68,66 @@ export function renderIdentity(): void {
    }
  }
  
@@ -126,10 +129,10 @@ index 4c891ff..e1e563e 100644
   * recovery is a fresh document load that re-triggers the Access login. In dev this
 diff --git a/client/demo.spec.ts b/client/demo.spec.ts
 new file mode 100644
-index 0000000..d20ff34
+index 0000000..72ab04c
 --- /dev/null
 +++ b/client/demo.spec.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,133 @@
 +// Demo sandbox (patched by demo.getkestrel.dev): in the demo's auth mode, the identity
 +// chip names the sandbox, and a split pill in the corner opens a note about it, with the
 +// reset as a second step, and links to the public site.
@@ -158,9 +161,11 @@ index 0000000..d20ff34
 +describe("demo mode", () => {
 +  beforeEach(() => signIn("demo"));
 +
-+  it("shows a Demo chip with no sign-out", () => {
++  it("shows a Demo chip with no sign-out, styled as Local dev's marker", () => {
 +    const identity = document.getElementById("identity");
 +    expect(identity?.textContent).toContain("Demo sandbox");
++    // Muted italics, like "Local dev": the accent is for things you can act on.
++    expect(identity?.querySelector(".who")?.className).toBe("who dev");
 +    expect(identity?.querySelector("a[href*='logout']")).toBeNull();
 +  });
 +
@@ -262,20 +267,16 @@ index 0000000..d20ff34
 +  });
 +});
 diff --git a/public/dashboard/styles.css b/public/dashboard/styles.css
-index d362e42..25c9184 100644
+index 23d3db2..3a2c61b 100644
 --- a/public/dashboard/styles.css
 +++ b/public/dashboard/styles.css
-@@ -801,6 +801,196 @@ body.nav-resizing .sidebar {
+@@ -838,6 +838,192 @@ body.nav-resizing .sidebar {
  .identity .who.dev {
    font-style: italic;
  }
-+/* Demo sandbox (patched by demo.getkestrel.dev): the identity chip, and the split pill
-+   (client/auth.ts, renderDemoPill): the public pages' dev pill, in the same corner,
-+   fixed so it adds nothing to the layout. */
-+.identity .who.demo {
-+  color: var(--accent);
-+  font-weight: 600;
-+}
++/* Demo sandbox (patched by demo.getkestrel.dev): the split pill (client/auth.ts,
++   renderDemoPill): the public pages' dev pill, in the same corner, fixed so it adds
++   nothing to the layout. */
 +.demo-pill {
 +  /* How far up it sits; the popover's height is capped by what's left above it. */
 +  --demo-bottom: 18px;
@@ -462,7 +463,7 @@ index d362e42..25c9184 100644
  .identity a.ghost {
    font-size: 13px;
    color: var(--muted);
-@@ -2638,6 +2828,13 @@ body.web-mode .content {
+@@ -3052,6 +3238,13 @@ body.web-mode .content {
      margin-top 0.3s,
      padding-block 0.3s;
  }
@@ -477,7 +478,7 @@ index d362e42..25c9184 100644
  /* modal */
  .modal-backdrop {
 diff --git a/src/lib/page.ts b/src/lib/page.ts
-index 7194db0..d99ad0a 100644
+index 4176dc6..88e6adc 100644
 --- a/src/lib/page.ts
 +++ b/src/lib/page.ts
 @@ -221,23 +221,70 @@ export function readerIconLink(logoUrl?: string): string {
