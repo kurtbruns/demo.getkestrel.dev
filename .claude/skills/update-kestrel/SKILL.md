@@ -90,7 +90,7 @@ Anything else failing there, notably a send, notification or fake-transport spec
   - each patch as applied cleanly, regenerated, or dropped;
   - shim and adapter changes;
   - what you checked by hand.
-- **Issue:** a bump has no issue of its own unless you file one. File "Kestrel vX.Y.Z" in this repo first, so the PR can say `Closes #N` (`.claude/CLAUDE.md`).
+- **Issue:** none. A routine bump opens its PR with no issue, and the body carries the context an issue would. File one only when a bump can't land in one PR: a patch that needs the user's decision, or a bump deferred or blocked. Then the PR says `Closes #N` as usual.
 - **Then:** offer to bump getkestrel.dev's `.kestrel-version` too (its `refresh-from-kestrel` skill), so the site's docs match the demo.
 
 ## 6. Check it live
