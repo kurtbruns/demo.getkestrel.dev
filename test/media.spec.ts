@@ -5,7 +5,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { MAX_OBJECT_BYTES, SandboxMedia, SEED_LOGO_KEY } from "../src/media";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
-import { SAME_ORIGIN, type Visitor, visitor } from "./support";
+import { png, SAME_ORIGIN, type Visitor, visitor } from "./support";
 
 interface PostList {
   posts: { id: string; status: string }[];
@@ -114,10 +114,45 @@ describe("uploads", () => {
     expect(await keysUnder(prefix)).toEqual([`${prefix}posts/${draft}/mine.png`]);
   });
 
+  it("are refused when their bytes aren't an image, with nothing written or counted", async () => {
+    const a = visitor();
+    const draft = await aDraft(a);
+    const res = await upload(a, draft, "fake.png", new Uint8Array([1, 2, 3]));
+    expect(res.status).toBe(400);
+    await res.arrayBuffer();
+    expect(await keysUnder(await sandboxPrefix(a))).toEqual([]);
+    const used = await runInDurableObject(await a.sandbox(), (i) => i.media.usedBytes());
+    expect(used).toBe(0);
+  });
+
+  it("answer a HEAD from their own sandbox only, without the body", async () => {
+    const a = visitor();
+    const b = visitor();
+    await (await b.fetch("/api/posts")).arrayBuffer(); // B has a sandbox of its own
+    const draft = await aDraft(a);
+    const bytes = png(64);
+    expect((await upload(a, draft, "mine.png", bytes)).status).toBe(201);
+    const path = `/media/posts/${draft}/mine.png`;
+    const own = await a.fetch(path, { method: "HEAD" });
+    expect(own.status).toBe(200);
+    expect(own.headers.get("content-type")).toBe("image/png");
+    expect(own.headers.get("content-length")).toBe(String(bytes.byteLength));
+    expect(own.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(own.headers.get("vary")).toContain("Cookie");
+    expect(await bytesOf(own)).toEqual([]);
+    const other = await b.fetch(path, { method: "HEAD" });
+    expect(other.status).toBe(404);
+    await other.arrayBuffer();
+    // A seed image falls back to the shared copy for a HEAD as for a GET.
+    const cover = await b.fetch(COVER, { method: "HEAD" });
+    expect(cover.status).toBe(200);
+    await cover.arrayBuffer();
+  });
+
   it("over the per-object cap are refused with a 413, and nothing is written", async () => {
     const a = visitor();
     const draft = await aDraft(a);
-    const res = await upload(a, draft, "big.png", new Uint8Array(MAX_OBJECT_BYTES + 1));
+    const res = await upload(a, draft, "big.png", png(MAX_OBJECT_BYTES + 1));
     expect(res.status).toBe(413);
     expect(((await res.json()) as { error: string }).error).toBe("body_too_large");
     expect(await keysUnder(await sandboxPrefix(a))).toEqual([]);
@@ -231,7 +266,7 @@ describe("hardening", () => {
     const traversal = await v.fetch("/media/posts/..%2F..%2Fx");
     expect(traversal.status).toBe(404);
     await traversal.arrayBuffer();
-    const dotdot = await upload(v, draft, "..", new Uint8Array([1]));
+    const dotdot = await upload(v, draft, "..", png());
     expect(dotdot.status).toBe(400);
     await dotdot.arrayBuffer();
   });
@@ -269,7 +304,7 @@ describe("hardening", () => {
   it("clears a sandbox's uploads when it's seeded again", async () => {
     const v = visitor();
     const draft = await aDraft(v);
-    expect((await upload(v, draft, "mine.png", new Uint8Array([1, 2]))).status).toBe(201);
+    expect((await upload(v, draft, "mine.png", png())).status).toBe(201);
     const stub = await v.sandbox();
     await runInDurableObject(stub, async (instance) => {
       const senv = sandboxEnv(env, instance.db.asD1(), instance.media.seedView());

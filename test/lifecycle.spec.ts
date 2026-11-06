@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
 import { IDLE_TTL_MS, RESET_PATH } from "../src/sandbox_do";
 import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
-import { BASE, SAME_ORIGIN, savePost, type Visitor, visitor } from "./support";
+import { BASE, png, SAME_ORIGIN, savePost, type Visitor, visitor } from "./support";
 
 const SECRET = (env as unknown as { SESSION_SECRET: string }).SESSION_SECRET;
 const EDITED = "Edited before the lifecycle event";
@@ -26,7 +26,7 @@ async function makeChanges(v: Visitor): Promise<void> {
   const uploaded = await v.fetch(`/api/posts/${draft}/images?filename=mine.png`, {
     method: "POST",
     headers: { ...SAME_ORIGIN, "content-type": "image/png" },
-    body: new Uint8Array([1, 2, 3]),
+    body: png(),
   });
   expect(uploaded.status).toBe(201);
 }

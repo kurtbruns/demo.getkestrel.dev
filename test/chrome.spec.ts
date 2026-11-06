@@ -42,7 +42,26 @@ describe("the public pages", () => {
       // It opens with no script, which these pages forbid.
       expect(html, path).toMatch(/<aside class="r-demo"[^>]*><details><summary>/);
       expect(res.headers.get("content-security-policy"), path).toContain("script-src 'none'");
+      // Since Kestrel 1.21.0, and through the Worker, so a token in the URL stays out of a
+      // Referer.
+      expect(res.headers.get("referrer-policy"), path).toBe("no-referrer");
     }
+  });
+
+  it("take a reader's form post, which says Origin: null from a no-referrer page", async () => {
+    const v = visitor();
+    await v.fetch("/subscribe");
+    const res = await v.fetch("/subscribe", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: "null",
+        "sec-fetch-site": "same-origin",
+      },
+      body: new URLSearchParams({ email: `reader-${crypto.randomUUID()}@example.com` }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("inbox");
   });
 
   it("don't carry it into the email: not the preview, the frozen send, or what was sent", async () => {

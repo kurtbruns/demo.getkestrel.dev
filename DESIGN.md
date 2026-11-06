@@ -1,6 +1,6 @@
 # Design: the per-visitor Kestrel sandbox
 
-demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.20.0; the file references below hold at that tag.
+demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.21.0; the file references below hold at that tag.
 
 ## Goals and non-goals
 
@@ -50,7 +50,7 @@ The wrapper doesn't fork Kestrel's repo. It builds a pinned Kestrel release plus
 
 The cookie (`__Host-kestrel_demo`) carries a random 256-bit session token and an HMAC of it, signed with the Worker secret `SESSION_SECRET` (`HttpOnly; Secure; SameSite=Lax; Path=/`, 30 days). The `__Host-` prefix means a browser takes it only from this exact host, so another getkestrel.dev subdomain can't plant one. The Worker honors only tokens it signed, in their canonical encoding, and tries every cookie of that name, so a junk one sent beside the real one can't knock a visitor out of their sandbox. A forged or tampered cookie counts as no cookie. The DO is named by a second, domain-separated HMAC of the token (`"kestrel-demo sandbox v1:" + token`, where the cookie's signature uses `"kestrel-demo session v1:"`). So the only way to reach a sandbox is to hold its cookie, and a token can't be derived from a DO id, a URL, or anything Kestrel emits. Nothing in a URL ever selects a sandbox (`src/session.ts`).
 
-Only a GET starts a session. The editor's first requests are GETs, while a cookieless write is another site's form posting here (a `SameSite=Lax` cookie isn't sent on a cross-site POST), and starting a session for it would replace the visitor's own. A cookieless POST, PUT, DELETE, HEAD or OPTIONS gets a 403 with no cookie and no sandbox. Two tabs opened at the same instant, before either has a cookie, get two sandboxes; the last cookie wins, and the other tab finds its sandbox gone on its next request. That's acceptable for a demo.
+Only a GET starts a session. The editor's first requests are GETs, while a cookieless write is another site's form posting here (a `SameSite=Lax` cookie isn't sent on a cross-site POST), and starting a session for it would replace the visitor's own. A cookieless POST, PUT, DELETE, HEAD or OPTIONS gets a 403 with no cookie and no sandbox. Since v1.21.0 Kestrel answers a `HEAD` as the `GET` for its path without the body, and that holds only inside a session: with a cookie, the visitor's own sandbox answers it, and with none it is still this 403, so a monitor pointed at a page starts no sandbox. `/health`, which the Worker answers itself, is the one to monitor. Two tabs opened at the same instant, before either has a cookie, get two sandboxes; the last cookie wins, and the other tab finds its sandbox gone on its next request. That's acceptable for a demo.
 
 Every sandbox response is private. Kestrel marks its public pages and media `public`, but in the demo every page is one visitor's own and the same URL names different content in different sandboxes. So the Worker rewrites `public` to `private` (and sets `private` where Kestrel sets nothing, as on its errors, and makes HTML `private, no-cache`, so a page always revalidates after an edit, a reset or the idle wipe), adds `Vary: Cookie`, and sends `private, no-store` on a response that starts a session, since it carries the cookie. If a sandbox can't start (its migrate or seed throws), the Worker logs `demo.sandbox_failed` and answers a 503 asking the visitor to reload. It still hands over a new session's cookie, so the reload retries the same sandbox rather than starting another.
 
@@ -73,11 +73,13 @@ The tests that enforce it:
   - it's absent from B's archive index, landing page and post list;
   - it 404s for a visitor with no cookie (who gets a fresh sandbox);
   - it 404s for a cookie that only resembles A's;
+  - a `HEAD` of it (since v1.21.0) answers 200 for A and 404 for B;
   - a list A imports is in A's export and subscriber list, and in neither of B's;
   - every response class the Worker makes carries `noindex`, the 429 page included.
 - `test/build/assets-headers.test.mjs`: the built static assets' `_headers` marks every asset `noindex`.
 - `test/media.spec.ts`:
-  - an upload in A 404s in B at the same path;
+  - an upload in A 404s in B at the same path, for a `HEAD` (since v1.21.0) as for a `GET`;
+  - an upload whose bytes aren't an image is refused, with nothing written or counted;
   - each sandbox's seeded logo is one shared object, served at that sandbox's own key and absent at another's;
   - a replaced or removed logo stays in its own sandbox;
   - media is served privately;
@@ -144,7 +146,7 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### The D1-compatible adapter
 
-`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.20.0:
+`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.21.0:
 
 - `prepare(sql)` (about 190 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (31 sites, counting the `batch<T>(` form, in `db/imports`, `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `db/sending`, `send/schedule`, `send/remake`, `send/budget`).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
@@ -180,15 +182,17 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 - **The editor:** when `whoami` reports `auth.mode === "demo"`, the identity chip reads "Demo sandbox" with no sign-out link, in the muted italics of Kestrel's own "Local dev" marker rather than the accent, since it is a label and not something to click, and the pill reads "Demo | View publication ↗", linking to `/` like the sidebar's own link. That matters most in the editor and the docs room, which hide the sidebar. The pill is rendered once, on `body` outside the routed view, so navigating never clears it. A few lines of script close its menu on Escape or a click outside.
 - **Nothing is added to the editor's height.** The pill is fixed, so no layout makes room for it and the editor never scrolls because of it. It sits on the header's z-index rung, above the content but below the phone drawer, the menus, the toasts and the modals, and steps up over the save bar while it shows (`body:has(.savebar.show)`). Its note's height is capped by the room above it, and scrolls on a short screen. It's clear of the phone's menu button (top left), "New post" (top right), and the toasts, which rise above it on a phone.
 - **Reset lives in the editor only.** Resetting is a publisher action, and keeping it off the public pages means they need no form. In the editor's note, "Reset demo…" opens a nested step, another `<details>`: "Discard everything you've changed and restore the sample?", then **Reset**, a form posting to `/_demo/reset` (same-origin; the editor's static assets set no `form-action`), and Cancel, which closes the step. `GET /_demo/reset` serves no page: the Worker answers it (and `HEAD`) with a 303 to `/dashboard/` before reading the session, so an old link still lands where the reset is and starts no sandbox of its own.
+- **The public pages send no referrer.** Since v1.21.0 Kestrel marks every reader page and post page `Referrer-Policy: no-referrer`, and the Worker passes it through. A browser's form post from such a page says `Origin: null`. Nothing here refuses that: `isOwnWrite` guards only the reset, which lives in the editor, whose static assets don't carry the policy, and a reader form's post is sent the `SameSite=Lax` cookie as a same-site request.
 - **SPEC §11** says no public page links into the Access-gated admin, with the dev-only shortcut as its one exception. The pill's "Open dashboard" link departs from that on purpose: the demo's editor has no Access wall, and each visitor's editor is their own sandbox, so the rule's reason doesn't hold. No I-invariant is touched.
 
 ## Media
 
-`env.MEDIA` is `SandboxMedia` (`src/media.ts`), a wrapper with the slice of the R2 binding's shape Kestrel uses: `get`, `put` (with `httpMetadata`) and `delete`. It also has `head` and `list` for the demo's own use.
+`env.MEDIA` is `SandboxMedia` (`src/media.ts`), a wrapper with the slice of the R2 binding's shape Kestrel uses: `get`, `put` (with `httpMetadata`) and `delete`. It also has `head` and `list` for the demo's own use. `get` hands back R2's own object, so what Kestrel reads off it, `size` among them since v1.21.0 (the `content-length` that lets a `HEAD` of `/media` state one without reading the body), needs nothing here.
 
 - **Scoped keys.** Every key is rewritten to `sessions/<sandbox DO id>/<key>`, so a sandbox can only address its own objects. A key with an empty, `.` or `..` segment, or a leading `/`, is refused with Kestrel's own `HttpError`: a 404 for a read (Kestrel's router decodes `/media/:key`, so `..%2F` arrives as `../`) and a 400 for a write, never a 500. `list` returns only the sandbox's own objects, with the prefix stripped.
 - **Shared seed images.** Kestrel's seed is given a separate view of the sandbox's media (`seedView`, in a seed-only env) whose `put` writes a prefix every sandbox shares, `seed/<kestrel tag>/`, once (skipped if the object is already there), so seeding a new sandbox writes no image bytes. The logo's key differs in every seed (`branding/logo/<time>-<random>`, Kestrel's `newLogoKey`), so the seed view stores it once at a fixed shared name, `branding/logo/seed`, and records the sandbox's key as an alias of it in the sandbox's SQLite (`demo_media_aliases`). Without that, every new sandbox would leave a logo of its own in the shared prefix, which nothing deletes. Another sandbox holds no alias for that key, so it reads as absent there. Only the seed ever holds that view: the bucket Kestrel's request handlers see can never write the shared prefix. A sandbox's read of a key it doesn't hold falls back to that prefix. A re-seed first clears the sandbox's own uploads (which Kestrel's `resetAll` can't reach), and the seed view drops anything that would shadow a seed key, so a re-seed restores the seed's images. Old tags' `seed/` prefixes are left in place; they're small, and nothing may delete the current tag's.
 - **Tombstones.** Deleting a key records a tombstone in the sandbox's SQLite, so a deleted seed image (a deleted post's cover) stays deleted for that sandbox rather than falling back to the shared copy. Only a write that lands clears it: a refused or failed upload leaves the key deleted.
+- **What reaches `put`.** Since v1.21.0 Kestrel reads an upload's format from its bytes, before it stores anything, so a file that isn't a PNG, JPEG, WebP or GIF, or is labeled as a different one, is Kestrel's 400 and never reaches `put`: it reserves nothing against the caps.
 - **Caps.** Uploads are capped at 2 MB per object (which binds post images; Kestrel's own caps are 5 MB for those and 512 KB for the logo) and 20 MB per sandbox, with the byte count kept in the sandbox's SQLite. The size is checked and reserved with no await in between, before the bytes go to R2, so parallel uploads (a DO serves other requests while it awaits R2) can't pass the cap together. A failed write gives the reservation back. Over a cap, `put` throws Kestrel's own `HttpError("body_too_large")`, which Kestrel's router answers as a 413 with its usual error body, and nothing is written. The DO also refuses an upload request that declares more than the per-object cap plus a multipart allowance (413), or no `Content-Length` at all (411), before Kestrel reads the body.
 - **No shared caching.** Seeded post ids are the same in every sandbox, so one `/media/...` URL names different bytes in different sandboxes. The Worker makes every sandbox response private ("Session identity"), so Kestrel's `public, max-age=3600` on media becomes `private, max-age=3600` with `Vary: Cookie`, and no shared cache keeps one visitor's copy for another.
 - **Cleanup.** `clear()` deletes everything under the sandbox's prefix and its records (sizes, tombstones and aliases), for the idle-TTL cleanup and reset (#8). The shared seed prefix is never deleted by a sandbox.
@@ -202,7 +206,7 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 
 ### Module-level state in Kestrel
 
-DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.20.0 that is:
+DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.21.0 that is:
 
 - `providers/fake.ts`: the in-memory `outbox` of every message "sent" and the `sentKeys` map, keyed by batch and address. Both grow without bound in a long-lived isolate.
 - `notify/fake.ts`: the notifications outbox, which grows the same way.

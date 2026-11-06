@@ -66,6 +66,15 @@ export const SAME_ORIGIN = {
  *  Content-Type on one (415). */
 export const NO_BODY = { "sec-fetch-site": "same-origin", "kestrel-client": "editor" };
 
+/** `size` bytes that open as a 1 x 1 PNG. Since Kestrel 1.21.0 an upload's format is read from
+ *  its bytes, by its signature alone, and Kestrel reads the size from the IHDR that follows,
+ *  where it stores a width and height that must be above 0. Nothing decodes the rest. */
+export function png(size = 32): Uint8Array {
+  const bytes = new Uint8Array(size);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
+  return bytes;
+}
+
 /**
  * Publish a new post in `v`'s sandbox the way the editor would (create, schedule at the
  * minimum lead), then let its fire time pass and run the sandbox's sweep alarm, so it lands
