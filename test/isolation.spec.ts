@@ -56,6 +56,15 @@ describe("a post published in one sandbox", () => {
     expect(await page.text()).not.toContain(MARKER);
   });
 
+  it("answers a HEAD only in its own sandbox", async () => {
+    const own = await a.fetch(`/archive/${slug}`, { method: "HEAD" });
+    expect(own.status).toBe(200);
+    expect(await own.text()).toBe("");
+    const other = await b.fetch(`/archive/${slug}`, { method: "HEAD" });
+    expect(other.status).toBe(404);
+    expect(await other.text()).toBe("");
+  });
+
   it("is listed everywhere in its own sandbox, and nowhere in another", async () => {
     for (const path of [
       "/archive",
