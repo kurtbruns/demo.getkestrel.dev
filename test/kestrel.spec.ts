@@ -72,6 +72,7 @@ describe("Kestrel in a sandbox", () => {
       "confirm/ready",
       "unsubscribe/ask",
       "reading/not-found",
+      "reading/no-page",
     ]) {
       const res = await me.fetch(`/api/reader-pages/${page}`);
       expect(res.status).toBe(200);

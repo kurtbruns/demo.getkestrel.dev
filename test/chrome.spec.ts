@@ -13,6 +13,10 @@ import { publish, visitor } from "./support";
 
 const PILL = 'class="r-demo"';
 
+/** What a browser's navigation asks for. Since Kestrel 1.22.0 an address that names no page
+ *  answers it with a page, and anything that doesn't ask for one with JSON. */
+const BROWSER = { accept: "text/html,application/xhtml+xml,*/*;q=0.8" };
+
 describe("the public pages", () => {
   it("carry the demo pill, opening the dashboard, and no form to the reset", async () => {
     const v = visitor();
@@ -45,6 +49,53 @@ describe("the public pages", () => {
       // Since Kestrel 1.21.0, and through the Worker, so a token in the URL stays out of a
       // Referer.
       expect(res.headers.get("referrer-policy"), path).toBe("no-referrer");
+    }
+  });
+
+  it("carry it on the page a browser gets at an address with no page, kept by no shared cache", async () => {
+    const first = visitor();
+    const opening = await first.fetch("/no-such-page", { headers: BROWSER });
+    // A first visit can land here, so the page is what starts the session.
+    expect(opening.headers.get("set-cookie")).not.toBeNull();
+    expect(opening.headers.get("cache-control")).toBe("private, no-store");
+    await opening.arrayBuffer();
+
+    const v = visitor();
+    await v.fetch("/api/posts");
+    // A mistyped address, an image that isn't there, and a key the sandbox's media refuses.
+    for (const path of ["/no-such-page", "/media/none.png", "/media/"]) {
+      const res = await v.fetch(path, { headers: BROWSER });
+      const html = await res.text();
+      expect(res.status, path).toBe(404);
+      expect(res.headers.get("content-type"), path).toContain("text/html");
+      expect(html, path).toContain("No page here");
+      expect(html.split(PILL).length - 1, path).toBe(1);
+      expect(html, path).toMatch(
+        /<a class="r-demo-go" href="\/dashboard\/">Open dashboard &rarr;<\/a>/,
+      );
+      expect(html, path).not.toContain(RESET_PATH);
+      expect(res.headers.get("x-robots-tag"), path).toBe("noindex");
+      expect(res.headers.get("cache-control"), path).toBe("private, no-cache");
+      expect(res.headers.get("vary"), path).toContain("Cookie");
+      expect(res.headers.get("content-security-policy"), path).toContain("script-src 'none'");
+    }
+  });
+
+  it("carry it at a trailing slash too, the same page as without one", async () => {
+    const v = visitor();
+    const { body } = await v.json<{ posts: { slug: string; email_only: boolean }[] }>(
+      "/api/posts?status=sent",
+    );
+    const slug = body.posts.find((p) => !p.email_only)?.slug;
+    expect(slug).toBeDefined();
+    for (const path of ["/archive", `/archive/${slug}`, "/subscribe"]) {
+      const bare = await v.fetch(path, { headers: BROWSER });
+      const slashed = await v.fetch(`${path}/`, { headers: BROWSER });
+      expect(slashed.status, path).toBe(200);
+      const html = await slashed.text();
+      expect(html, path).toContain(PILL);
+      expect(html, path).toBe(await bare.text());
+      expect(slashed.headers.get("x-robots-tag"), path).toBe("noindex");
     }
   });
 
@@ -96,6 +147,16 @@ describe("the public pages", () => {
     const res = await v.fetch("/api/posts");
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(await res.text()).not.toContain(PILL);
+    // An /api path is JSON even to a browser, and so is an address that doesn't ask for a page.
+    for (const [path, headers] of [
+      ["/api/no-such-route", BROWSER],
+      ["/no-such-page", {}],
+    ] as const) {
+      const refused = await v.fetch(path, { headers });
+      expect(refused.status, path).toBe(404);
+      expect(refused.headers.get("content-type"), path).toContain("application/json");
+      expect(await refused.text(), path).not.toContain(PILL);
+    }
   });
 });
 
