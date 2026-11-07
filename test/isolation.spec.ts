@@ -65,6 +65,29 @@ describe("a post published in one sandbox", () => {
     expect(await other.text()).toBe("");
   });
 
+  it("answers at a trailing slash only in its own sandbox (since Kestrel 1.22.0)", async () => {
+    const own = await a.fetch(`/archive/${slug}/`);
+    expect(own.status).toBe(200);
+    expect(await own.text()).toContain(MARKER);
+    const other = await b.fetch(`/archive/${slug}/`);
+    expect(other.status).toBe(404);
+    expect(await other.text()).not.toContain(MARKER);
+  });
+
+  it("names nothing of A's on the page for an address with no page, in A or B (since Kestrel 1.22.0)", async () => {
+    for (const [who, v] of [
+      ["A", a],
+      ["B", b],
+    ] as const) {
+      const res = await v.fetch(`/${MARKER}`, { headers: { accept: "text/html" } });
+      expect(res.status, who).toBe(404);
+      const html = await res.text();
+      expect(html, who).toContain("No page here");
+      expect(html, who).not.toContain(MARKER);
+      expect(res.headers.get("cache-control"), who).toBe("private, no-cache");
+    }
+  });
+
   it("is listed everywhere in its own sandbox, and nowhere in another", async () => {
     for (const path of [
       "/archive",
@@ -300,6 +323,10 @@ describe("noindex", () => {
       expect(res.headers.get("x-robots-tag"), path).toBe("noindex");
       await res.arrayBuffer();
     }
+    // Kestrel's page for an address with no page (since v1.22.0), which a browser asks for.
+    const page = await v.fetch("/no-such-page", { headers: { accept: "text/html" } });
+    expect(await page.text()).toContain("No page here");
+    expect(page.headers.get("x-robots-tag")).toBe("noindex");
   });
 
   it("is on the 429 page", async () => {
