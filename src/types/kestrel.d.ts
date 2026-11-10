@@ -23,7 +23,6 @@ export interface KestrelEnv {
 export interface KestrelConfig {
   readonly appOrigin: string;
   readonly provider: "none" | "fake" | "ses";
-  readonly notifyChannel: "fake" | "cloudflare" | "provider";
 }
 
 /** Kestrel's default export (src/index.ts). */

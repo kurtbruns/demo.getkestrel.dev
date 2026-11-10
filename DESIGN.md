@@ -1,6 +1,6 @@
 # Design: the per-visitor Kestrel sandbox
 
-demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.22.0; the file references below hold at that tag.
+demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.23.0; the file references below hold at that tag.
 
 ## Goals and non-goals
 
@@ -62,7 +62,7 @@ This is the main reason for the per-visitor design over a single shared demo ins
 
 - Every demo response carries `X-Robots-Tag: noindex`: the Worker sets it on everything it answers, and `patches/0003-demo-noindex.patch` adds it to the static editor through Kestrel's `_headers`. `robots.txt` disallows everything, so no sandbox's content is indexed.
 - No shared cache can keep one sandbox's response for another: every sandbox response is `private` with `Vary: Cookie`, and one that starts a session is `no-store` ("Session identity").
-- Mail can't leave: `PROVIDER=fake` is fixed in the sandbox env, no `NOTIFY` binding is declared, and outbound `fetch` is refused inside the DO (see "Sends").
+- Mail can't leave: `PROVIDER=fake` is fixed in the sandbox env, publisher notifications go through that same provider (since v1.23.0 Kestrel has no other channel for them), and outbound `fetch` is refused inside the DO (see "Sends").
 - Visitor uploads are capped and scoped to the session's R2 prefix, and are served only through the session's own DO.
 - Sharing a cookie shares a sandbox. That is the visitor's own choice with their own browser state, not a link anyone can be handed.
 
@@ -148,9 +148,9 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### The D1-compatible adapter
 
-`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.22.0:
+`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.23.0:
 
-- `prepare(sql)` (about 190 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (31 sites, counting the `batch<T>(` form, in `db/imports`, `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `db/sending`, `send/schedule`, `send/remake`, `send/budget`).
+- `prepare(sql)` (about 190 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (32 sites, counting the `batch<T>(` form, in `db/imports`, `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `db/sending`, `send/schedule`, `send/remake`, `send/budget`, and since v1.23.0 `send/describe`, a two-SELECT read).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
 - Results: `all()` and `run()` return `{ results, success, meta }`. Kestrel reads `meta.changes` (28 sites), so it must be exact: since v1.20.0 an upload claims its name with one `INSERT … ON CONFLICT DO NOTHING` and reads `changes` 0 as the name taken, so a second `cover.jpg` is numbered, never a duplicate. DO SQLite's cursor reports `rowsWritten`, which also counts index writes, so the adapter reads SQLite's own `changes()` (and `last_insert_rowid()`) after each statement and uses `rowsWritten` only to tell whether the statement wrote at all, which a SELECT following a write needs.
 - Statement shapes: since v1.9.0 the send loop moves a batch of deliveries with one `UPDATE … FROM json_each(?) … RETURNING` inside a `batch`, and its `meta.changes` must count only the rows it moved. DO SQLite runs it, and `test/d1-adapter.spec.ts` holds the adapter to it. Kestrel's own tests also read `meta.rows_read` and `meta.rows_written` (`test/support/d1_guard.ts`), but only on their own D1, never through the adapter, so it doesn't report them.
@@ -201,14 +201,14 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 
 ## Sends
 
-- **The fake transport only.** `sandboxEnv` fixes `PROVIDER=fake`. It has to name it: since v1.7.0 an unset `PROVIDER` means no provider is connected (`none`), which refuses every send, rather than the fake. Since v1.8.0 Kestrel also refuses `fake` off a loopback origin unless the env opts in, so `sandboxEnv` sets `ALLOW_FAKE_PROVIDER: "true"`. It declares no `NOTIFY` binding, so publisher notifications go through the fake provider too (`notifyChannel` resolves to `provider` deployed, `fake` on a loopback dev origin). As a second check, the DO resolves Kestrel's own config before migrating and refuses to run unless the provider is `fake` and notifications aren't Cloudflare's email (`checkSandboxConfig`).
+- **The fake transport only.** `sandboxEnv` fixes `PROVIDER=fake`. It has to name it: since v1.7.0 an unset `PROVIDER` means no provider is connected (`none`), which refuses every send, rather than the fake. Since v1.8.0 Kestrel also refuses `fake` off a loopback origin unless the env opts in, so `sandboxEnv` sets `ALLOW_FAKE_PROVIDER: "true"`. Publisher notifications go through the fake provider too: since v1.23.0 the provider is Kestrel's only channel for them (the `NOTIFY` binding for Cloudflare's email, and `notifyChannel` in its config, are gone), with the in-memory fake notifier standing in on a loopback dev origin. As a second check, the DO resolves Kestrel's own config before migrating and refuses to run unless the provider is `fake` (`checkSandboxConfig`), which now covers notifications as well. `test/sends.spec.ts` holds it: a test notification lands in the fake provider's outbox with no fetch refused, and Send a test alert (since v1.23.0) sends nothing.
 - **The alarm drives the sweep.** The DO's alarm calls Kestrel's own `scheduled()` with a `ScheduledController`-shaped `{ cron: "* * * * *", scheduledTime, noRetry }`, collects its `waitUntil` work, and awaits it. A tick that fails is logged, as Kestrel's own cron would, and the next one comes from re-arming, not the runtime's alarm retries. After every request and every sweep, the DO re-arms the alarm for `nextWake`, the earliest reason to wake: a minute from now while a send is `sending`, and the earliest scheduled send's `fire_at`. The idle expiry ("Lifecycle") is a third term. Every reason to wake is a term in `nextWake`, so the one alarm always serves the soonest, and a seeded sandbox with nothing to send wakes only at its expiry. There is no Cron Trigger, so no single tick sweeps every sandbox. The DO reads Kestrel's `sends` table directly (read-only) to decide this, so a Kestrel release that changes those columns fails here loudly. With the plain fake transport, a send is `sending` for at most one tick (or one five-minute lease after a crash), and nothing halts or waits on receipts.
 - **Fast enough to watch.** `MIN_LEAD_SECONDS=60` (Kestrel's floor) keeps a demo send watchable within a visit. `SUBREQUEST_BUDGET=1000` (Kestrel's cap) lets a send finish in one tick, since the adapter's statements are local SQLite calls, not D1 subrequests. Since v1.9.0 Kestrel also reads that setting as the Workers plan: left at Free's default it warns before a send or import that may spend D1's daily written rows (the `daily_writes` condition, the Schedule dialog's and scheduled banner's warning, `freePlanLimits` in the settings reflection), and takes 1,000 rows an import and an export page. A sandbox's SQLite has no such daily allowance, so those warnings would be false there, and the sandbox stays above that default. Imports are capped at 1,000 rows anyway, by `patches/0005-demo-import-limit.patch` rather than the budget, since imports aren't rate-limited and each one grows the visitor's SQLite until the idle wipe. The export keeps Kestrel's 10,000-row pages, since a read stores nothing. The in-app Docs tab, Kestrel's own pages (since v1.11.0 "Bring your existing list" in its Publishing set, whose last section is the import format), still says an instance on Workers Paid takes 10,000 rows an import, adding that the import screen says which limit applies. The demo leaves it, because the format route and the `too_many_rows` refusal carry the demo's own limit and reason.
 - **No egress.** `src/egress.ts` replaces `globalThis.fetch` with one that refuses every request. It's installed by the Worker entry's first import (`src/egress-install.ts`), and ES modules evaluate in import order, so the block is in place before any of Kestrel's modules are even evaluated. Every outbound call Kestrel can make goes through it: SES through aws4fetch (sends, and since v1.18.0 the sweep's read of the SES account, which runs only when the provider is `ses`), SNS signing certificates and subscription URLs, Access's JWKS. Each resolves the global `fetch` when it's called. In the sandbox none of those paths is even reachable, since the webhook routes delegate to the active provider, always the fake. So the block is a backstop, and the tests show a full send completing with nothing refused, and a refused fetch counted. It's isolate-wide, which is fine: the Worker reaches its sandboxes and R2 through bindings, never the global fetch.
 
 ### Module-level state in Kestrel
 
-DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.22.0 that is:
+DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.23.0 that is:
 
 - `providers/fake.ts`: the in-memory `outbox` of every message "sent" and the `sentKeys` map, keyed by batch and address. Both grow without bound in a long-lived isolate.
 - `notify/fake.ts`: the notifications outbox, which grows the same way.
@@ -233,10 +233,10 @@ None of this is reachable over HTTP outside dev mode (the outbox is read only by
 | `PROVIDER` | `fake` | mail never leaves |
 | `APP_ORIGIN` | `https://demo.getkestrel.dev` | links, archive URLs, media URLs |
 | `ARCHIVE_BASE_PATH` | `/archive` | Kestrel default |
-| `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | `send.field-notes.example`, `Field Notes <newsletter@send.field-notes.example>`, `us-east-1` | required by `Env`, unused by the fake; `.example` can't route mail |
+| `SENDING_DOMAIN`, `FROM_ADDRESS`, `AWS_REGION` | `send.field-notes.example`, `newsletter@send.field-notes.example`, `us-east-1` | required by `Env`, unused by the fake; `.example` can't route mail. The address is bare, so the sender's name follows the publication's name (since v1.23.0), as on a fresh instance |
 | `MIN_LEAD_SECONDS` | `60` | a send fires within a visit |
 | `SUBREQUEST_BUDGET` | `1000` | sends finish in one tick; off Workers Free's limits, so no D1 daily-writes warnings (imports are capped at 1,000 rows by patch `0005`) |
-| `ACCESS_*`, `DEV_AUTH_SECRET`, `NOTIFY`, provider credentials | unset | see "Auth" and "Sends" |
+| `ACCESS_*`, `DEV_AUTH_SECRET`, provider credentials | unset | see "Auth" and "Sends" |
 
 ## Open questions
 
