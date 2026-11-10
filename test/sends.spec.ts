@@ -7,7 +7,7 @@ import { deliverToOutbox, FakeNotifier, fakeNotifications, fakeOutbox } from "ke
 import { describe, expect, it } from "vitest";
 import { checkSandboxConfig, sandboxEnv } from "../src/sandbox";
 import { IDLE_TTL_MS } from "../src/sandbox_do";
-import { SAME_ORIGIN, type Visitor, visitor } from "./support";
+import { NO_BODY, SAME_ORIGIN, type Visitor, visitor } from "./support";
 
 interface SendView {
   id: string;
@@ -171,6 +171,57 @@ describe("network egress", () => {
   });
 });
 
+describe("a notification to the publisher (since Kestrel 1.23.0 only through the provider)", () => {
+  it("goes to the fake transport, names the publication as its sender, and reaches no network", async () => {
+    const v = visitor();
+    await v.fetch("/api/posts");
+    const address = `publisher-${crypto.randomUUID()}@field-notes.example`;
+    const saved = await v.fetch("/api/settings", {
+      method: "PUT",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ notifications: { to: [address] } }),
+    });
+    expect(saved.status).toBe(200);
+    await saved.arrayBuffer();
+    // The second channel, Cloudflare's own email, is gone from the reflection, and the
+    // bare FROM_ADDRESS leaves the sender's name to the publication's.
+    const { body } = await v.json<{ deployment: Record<string, unknown> }>("/api/settings");
+    expect(body.deployment).not.toHaveProperty("notify_channel");
+    expect(body.deployment.from_address).toBe("newsletter@send.field-notes.example");
+    expect(body.deployment.notify_from).toBe(
+      "Field Notes via Kestrel <newsletter@send.field-notes.example>",
+    );
+
+    const stub = await v.sandbox();
+    const refusedBefore = await runInDurableObject(stub, (i) => i.egressRefused());
+    const test = await v.json<{ to: string[]; failed: unknown[] }>(
+      "/api/settings/notifications/test",
+      { method: "POST", headers: NO_BODY },
+    );
+    expect(test.status).toBe(200);
+    expect(test.body).toEqual({ to: [address], failed: [] });
+    // It landed in the fake provider's in-memory outbox, the only place a sandbox's mail goes.
+    expect(fakeOutbox().filter((m) => m.to === address)).toHaveLength(1);
+    expect(await runInDurableObject(stub, (i) => i.egressRefused())).toBe(refusedBefore);
+  });
+
+  it("isn't sent by Send a test alert, which only logs a line", async () => {
+    const v = visitor();
+    await v.fetch("/api/posts");
+    const stub = await v.sandbox();
+    const refusedBefore = await runInDurableObject(stub, (i) => i.egressRefused());
+    const outboxBefore = fakeOutbox().length;
+    const alert = await v.json<{ event: string; cause: string }>(
+      "/api/settings/notifications/alert-test",
+      { method: "POST", headers: NO_BODY },
+    );
+    expect(alert.status).toBe(200);
+    expect(alert.body).toMatchObject({ event: "alert.sending", cause: "test" });
+    expect(fakeOutbox().length).toBe(outboxBefore);
+    expect(await runInDurableObject(stub, (i) => i.egressRefused())).toBe(refusedBefore);
+  });
+});
+
 describe("the sandbox config", () => {
   it("runs Kestrel only on the fake transport", () => {
     const fake = sandboxEnv(env, {} as D1Database, {} as R2Bucket);
@@ -188,9 +239,6 @@ describe("the sandbox config", () => {
       SENDING_DOMAIN: "getkestrel.dev",
     } as unknown as ReturnType<typeof sandboxEnv>;
     expect(() => checkSandboxConfig(ses)).toThrow(/only on the fake transport/);
-    expect(() =>
-      checkSandboxConfig({ ...fake, NOTIFY: {} } as unknown as ReturnType<typeof sandboxEnv>),
-    ).toThrow(/only on the fake transport/);
   });
 });
 

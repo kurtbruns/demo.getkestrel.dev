@@ -7,9 +7,8 @@ import { demoImages, demoLogo, getConfig, type KestrelEnv, seedDatabase } from "
 
 /**
  * The env Kestrel runs on, over the sandbox's own database and media. Built from an allowlist, never by spreading the Worker's env, so
- * nothing the deploy happens to bind (a `DEV_AUTH_SECRET`, Access settings, a `NOTIFY`
- * binding, a provider or its credentials) can reach Kestrel. The transport is always the
- * fake.
+ * nothing the deploy happens to bind (a `DEV_AUTH_SECRET`, Access settings, a provider or
+ * its credentials) can reach Kestrel. The transport is always the fake.
  */
 export function sandboxEnv(
   env: Pick<Env, "APP_ORIGIN">,
@@ -27,7 +26,9 @@ export function sandboxEnv(
     ARCHIVE_BASE_PATH: "/archive",
     // Required by Kestrel's Env and unused by the fake transport; .example can't route mail.
     SENDING_DOMAIN: "send.field-notes.example",
-    FROM_ADDRESS: "Field Notes <newsletter@send.field-notes.example>",
+    // A bare address, so the sender's name follows the publication's name, as a fresh
+    // instance's does (since v1.23.0): renaming the publication renames the sender.
+    FROM_ADDRESS: "newsletter@send.field-notes.example",
     AWS_REGION: "us-east-1",
     // Kestrel's floor: a demo send fires within a visit.
     MIN_LEAD_SECONDS: "60",
@@ -42,14 +43,14 @@ export function sandboxEnv(
 
 /**
  * Refuse to run Kestrel on anything but the fake transport, whatever `sandboxEnv` builds:
- * a belt to the allowlist's braces. Kestrel resolves its notification channel from the env
- * too, and it must not be Cloudflare's own email.
+ * a belt to the allowlist's braces. Publisher notifications go through the same provider
+ * (since v1.23.0 Kestrel has no other channel for them), so this covers them too.
  */
 export function checkSandboxConfig(env: KestrelEnv): void {
   const config = getConfig(env);
-  if (config.provider !== "fake" || config.notifyChannel === "cloudflare") {
+  if (config.provider !== "fake") {
     throw new Error(
-      `the demo sandbox runs only on the fake transport (provider ${config.provider}, notifications ${config.notifyChannel})`,
+      `the demo sandbox runs only on the fake transport (provider ${config.provider})`,
     );
   }
 }
