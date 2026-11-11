@@ -20,9 +20,15 @@
  *
  * Kestrel uses `get`, `put` (with `httpMetadata`) and `delete`; `head` and `list` are here
  * for the demo's own use, and `list` stays inside the sandbox's prefix.
+ *
+ * `serveSeedMedia` answers a `/media/*` request that has no session from the shared prefix
+ * alone, as a fresh sandbox would, without starting one (DESIGN.md, "Media").
  */
 
-import { HttpError } from "kestrel";
+import { BUILD_INFO, HttpError } from "kestrel";
+
+/** The prefix every sandbox of this Kestrel release shares for the seed's images. */
+export const SEED_PREFIX = `seed/${BUILD_INFO.tag}/`;
 
 /** The shape of Kestrel's per-upload logo key (`newLogoKey`, src/db/settings.ts). */
 const LOGO_KEY = /^branding\/logo\/\d+-[0-9a-f]{8}$/;
@@ -78,6 +84,51 @@ function checkKey(key: string, status: 400 | 404): string {
       : new HttpError("bad_request", `media key refused: ${JSON.stringify(key)}`);
   }
   return key;
+}
+
+/** An error body as Kestrel's router renders one (`toErrorResponse`, src/lib/errors.ts). */
+function refusal(status: 400 | 404, error: string, message: string): Response {
+  return Response.json({ error, message }, { status });
+}
+
+/**
+ * Kestrel's `serveMedia` (src/routes/images.ts) for a request with no session: what a fresh
+ * sandbox would answer, read from the shared seed prefix alone. A fresh sandbox holds no
+ * objects, tombstones or aliases, so its read of any key falls straight through to
+ * `SEED_PREFIX + key`, and so does this one. That prefix is the same for every sandbox and
+ * only the seed writes it, so this serves no sandbox's own data, and nothing outside it can
+ * be named: R2 keys are literal, and the key is checked as a sandbox's read would be.
+ *
+ * `encodedKey` is the path after `/media/`, still percent-encoded, which Kestrel's router
+ * decodes before its handler sees it. The headers are `serveMedia`'s; the Worker makes the
+ * response private, as it does every sandbox's. A 404 is always the JSON body: Kestrel gives a
+ * browser asking for HTML its "No page here" page instead (since v1.22.0), but that page reads
+ * the publication's identity from a sandbox's database, and starting one is what this avoids.
+ */
+export async function serveSeedMedia(bucket: R2Bucket, encodedKey: string): Promise<Response> {
+  let key: string;
+  try {
+    key = decodeURIComponent(encodedKey);
+  } catch {
+    return refusal(400, "bad_request", "path parameter key is not validly percent-encoded");
+  }
+  try {
+    checkKey(key, 404);
+  } catch {
+    return refusal(404, "not_found", "media not found");
+  }
+  const obj = await bucket.get(SEED_PREFIX + key);
+  if (!obj) {
+    return refusal(404, "not_found", "media");
+  }
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("etag", obj.httpEtag);
+  headers.set("cache-control", "public, max-age=3600");
+  headers.set("content-length", String(obj.size));
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("content-security-policy", "sandbox");
+  return new Response(obj.body, { headers });
 }
 
 export class SandboxMedia {

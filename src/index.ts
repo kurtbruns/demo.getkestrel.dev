@@ -9,6 +9,7 @@
 // First, before Kestrel's modules evaluate: no request may leave the demo (src/egress.ts).
 import "./egress-install";
 import { BUILD_INFO } from "kestrel";
+import { serveSeedMedia } from "./media";
 import { RESET_PATH } from "./sandbox_do";
 import { mintSession, readSession, sandboxName, sessionCookie } from "./session";
 
@@ -177,6 +178,16 @@ async function route(request: Request, env: Env): Promise<Response> {
         },
       });
     }
+  }
+  if (!token && request.method === "GET" && url.pathname.startsWith("/media/")) {
+    // Media with no session: a link preview or image proxy fetching a URL a visitor's page
+    // named. A new sandbox would answer it from the shared seed images and nothing else, so
+    // answer it from there without starting one, which would cost a migrate and a seed and
+    // be discarded with its cookie (DESIGN.md, "Media").
+    return privately(
+      await serveSeedMedia(env.MEDIA, url.pathname.slice("/media/".length)),
+      undefined,
+    );
   }
   if (!token) {
     // Only a GET starts a session. The editor's first requests are GETs; a cookieless

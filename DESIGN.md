@@ -42,7 +42,7 @@ The wrapper doesn't fork Kestrel's repo. It builds a pinned Kestrel release plus
 ### Request flow
 
 1. A request arrives at the demo Worker. Requests for Kestrel's static assets (`/dashboard/` and its CSS/JS, the favicon) are served from the Workers assets directory before the Worker runs. They are the same bytes for every visitor and carry no data. An asset path that reaches the Worker anyway (a file that doesn't exist) gets a plain 404 and never a session, as do `/health` and `robots.txt`.
-2. For anything else, the Worker reads the session cookie. With no valid cookie it creates a new session, subject to the per-IP rate limit (see "Lifecycle"), and sets the cookie on the response. Crawlers are kept away by `robots.txt` (`Disallow: /`) and `noindex`, so they don't mint sandboxes.
+2. For anything else, the Worker reads the session cookie. A GET of `/media/*` with no valid cookie is answered from the shared seed images and starts no session (see "Media", "Media with no session"). Otherwise, with no valid cookie it creates a new session, subject to the per-IP rate limit (see "Lifecycle"), and sets the cookie on the response. Crawlers are kept away by `robots.txt` (`Disallow: /`) and `noindex`, so they don't mint sandboxes.
 3. The Worker derives the Durable Object id from the session and forwards the request to that DO.
 4. On its first request after it starts, the DO applies any of Kestrel's `migrations/` it hasn't yet and seeds Field Notes if its database isn't seeded for this Kestrel version, all inside `blockConcurrencyWhile`, so concurrent first requests seed once and none sees a half-seeded database. Then it calls Kestrel's `fetch` with the sandboxed env and returns the response. The Worker makes it private and adds `X-Robots-Tag: noindex`, as it does for every response it sends, including its own errors.
 
@@ -56,14 +56,14 @@ Every sandbox response is private. Kestrel marks its public pages and media `pub
 
 ## The safety property
 
-**A visitor can only ever see their own sandbox.** Every request, including the public `/archive/*` pages, the landing page at `/`, an email's unlisted link at `/email/<token>` (since v1.12.0), `/media/*`, and any address with no page (since v1.22.0 Kestrel gives a browser a "No page here" page there), is answered by the visitor's own Durable Object, chosen by their cookie and nothing else. So nobody can mint a demo.getkestrel.dev URL that shows anyone else their content. If someone writes an offensive post, publishes it, and shares the archive link, everyone who opens that link sees the pristine Field Notes sandbox their own cookie leads to (a fresh one, if they have none), and the post's slug simply 404s. The demo can't be used to host or distribute content.
+**A visitor can only ever see their own sandbox.** Every request, including the public `/archive/*` pages, the landing page at `/`, an email's unlisted link at `/email/<token>` (since v1.12.0), `/media/*`, and any address with no page (since v1.22.0 Kestrel gives a browser a "No page here" page there), is answered by the visitor's own Durable Object, chosen by their cookie and nothing else. The one request answered without a sandbox is a cookieless GET of `/media/*`, which reads only the shared seed images, the same bytes every fresh sandbox would serve (see "Media"). So nobody can mint a demo.getkestrel.dev URL that shows anyone else their content. If someone writes an offensive post, publishes it, and shares the archive link, everyone who opens that link sees the pristine Field Notes sandbox their own cookie leads to (a fresh one, if they have none), and the post's slug simply 404s. The demo can't be used to host or distribute content.
 
 This is the main reason for the per-visitor design over a single shared demo instance. Supporting measures:
 
 - Every demo response carries `X-Robots-Tag: noindex`: the Worker sets it on everything it answers, and `patches/0003-demo-noindex.patch` adds it to the static editor through Kestrel's `_headers`. `robots.txt` disallows everything, so no sandbox's content is indexed.
 - No shared cache can keep one sandbox's response for another: every sandbox response is `private` with `Vary: Cookie`, and one that starts a session is `no-store` ("Session identity").
 - Mail can't leave: `PROVIDER=fake` is fixed in the sandbox env, publisher notifications go through that same provider (since v1.23.0 Kestrel has no other channel for them), and outbound `fetch` is refused inside the DO (see "Sends").
-- Visitor uploads are capped and scoped to the session's R2 prefix, and are served only through the session's own DO.
+- Visitor uploads are capped and scoped to the session's R2 prefix, and are served only through the session's own DO. A cookieless `/media/*` read looks only under the seed prefix, so it can't reach them.
 - Sharing a cookie shares a sandbox. That is the visitor's own choice with their own browser state, not a link anyone can be handed.
 
 The tests that enforce it:
@@ -77,6 +77,7 @@ The tests that enforce it:
   - its address with a trailing slash (since v1.22.0) answers 200 for A and 404 for B;
   - the page for an address with no page (since v1.22.0) names nothing of A's, in A or in B, and no shared cache may keep it;
   - a list A imports is in A's export and subscriber list, and in neither of B's;
+  - an upload in A can't be read by a request with no cookie, at its URL, its R2 key, or a key that climbs out of the seed prefix;
   - every response class the Worker makes carries `noindex`, the 429 page included.
 - `test/build/assets-headers.test.mjs`: the built static assets' `_headers` marks every asset `noindex`.
 - `test/media.spec.ts`:
@@ -85,6 +86,7 @@ The tests that enforce it:
   - each sandbox's seeded logo is one shared object, served at that sandbox's own key and absent at another's;
   - a replaced or removed logo stays in its own sandbox;
   - media is served privately;
+  - a cookieless `/media/*` GET serves a seed image without a cookie, a sandbox or the new-session limit, 404s a sandbox's logo key, and answers a malformed key with a 4xx;
   - keys can't escape a sandbox's prefix.
 - `test/sessions.spec.ts`:
   - the same cookie reaches the same sandbox, and only its own;
@@ -197,6 +199,7 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 - **What reaches `put`.** Since v1.21.0 Kestrel reads an upload's format from its bytes, before it stores anything, so a file that isn't a PNG, JPEG, WebP or GIF, or is labeled as a different one, is Kestrel's 400 and never reaches `put`: it reserves nothing against the caps. Since v1.22.0 so is a file whose header states it has no size.
 - **Caps.** Uploads are capped at 2 MB per object (which binds post images; Kestrel's own caps are 5 MB for those and 512 KB for the logo) and 20 MB per sandbox, with the byte count kept in the sandbox's SQLite. The size is checked and reserved with no await in between, before the bytes go to R2, so parallel uploads (a DO serves other requests while it awaits R2) can't pass the cap together. A failed write gives the reservation back. Over a cap, `put` throws Kestrel's own `HttpError("body_too_large")`, which Kestrel's router answers as a 413 with its usual error body, and nothing is written. The DO also refuses an upload request that declares more than the per-object cap plus a multipart allowance (413), or no `Content-Length` at all (411), before Kestrel reads the body.
 - **No shared caching.** Seeded post ids are the same in every sandbox, so one `/media/...` URL names different bytes in different sandboxes. The Worker makes every sandbox response private ("Session identity"), so Kestrel's `public, max-age=3600` on media becomes `private, max-age=3600` with `Vary: Cookie`, and no shared cache keeps one visitor's copy for another.
+- **Media with no session.** A GET of `/media/*` with no valid cookie is answered by the Worker itself (`serveSeedMedia`), without a session. These come from link previews and image proxies fetching a URL a visitor's page named, often minutes later and never with the visitor's cookie: a chat app unfurling a shared archive link, say. Starting a sandbox for each one cost a migrate and a full seed (two seconds or more), a slot in the new-session rate limit, and an orphan sandbox kept for the idle TTL, only to answer a 404 for any sandbox-specific key such as a logo's. A fresh sandbox holds no objects, tombstones or aliases, so its read of any key falls straight through to `seed/<kestrel tag>/<key>`; the Worker reads that same R2 key directly, with the key decoded and checked as a sandbox's read is, and sends Kestrel's `serveMedia` headers, made private as every sandbox response is. The answer is byte for byte what a fresh sandbox would give, minus the cookie. The seed prefix is the same for every sandbox and only the seed writes it, so this serves no sandbox's own data. A sandbox's per-upload logo key has no object under the seed prefix (the seed's logo is stored at `branding/logo/seed`), so it 404s, as it did. One edge: just after a release is deployed, before any sandbox has seeded it, the new tag's seed prefix doesn't exist yet, so a cookieless seed image 404s until the first visitor's sandbox seeds it. A 404 here is always Kestrel's JSON error body, where a fresh sandbox would give a browser asking for HTML its "No page here" page (since v1.22.0): that page reads the publication's identity from a sandbox's database, which is what this path avoids starting, and nothing that fetches an image URL reads the page. A cookieless HEAD of `/media/*` keeps its 403.
 - **Cleanup.** `clear()` deletes everything under the sandbox's prefix and its records (sizes, tombstones and aliases), for the idle-TTL cleanup and reset (#8). The shared seed prefix is never deleted by a sandbox.
 
 ## Sends

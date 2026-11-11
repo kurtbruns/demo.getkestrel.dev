@@ -10,7 +10,8 @@
 //
 // Related tests elsewhere: an upload in one sandbox 404s in another at the same path, and a
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
-// tampered cookie is a new session, not a way in (test/sessions.spec.ts).
+// tampered cookie is a new session, not a way in (test/sessions.spec.ts). A cookieless
+// `/media/*` read is answered from the shared seed images only (test/media.spec.ts, and below).
 
 import { runInDurableObject, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -334,5 +335,35 @@ describe("noindex", () => {
     expect(refused?.status).toBe(429);
     expect(refused?.headers.get("x-robots-tag")).toBe("noindex");
     await refused?.arrayBuffer();
+  });
+});
+
+describe("an upload in one sandbox", () => {
+  it("can't be read by a request with no cookie, at its path or its R2 key", async () => {
+    const a = visitor();
+    const { body } = await a.json<{ posts: { id: string }[] }>("/api/posts?status=draft");
+    const draft = body.posts[0]?.id;
+    expect(draft).toBeDefined();
+    const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9]);
+    const up = await a.fetch(`/api/posts/${draft}/images?filename=private.png`, {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-type": "image/png" },
+      body: bytes,
+    });
+    expect(up.status).toBe(201);
+    await up.arrayBuffer();
+    const own = `/media/posts/${draft}/private.png`;
+    expect((await a.fetch(own)).status).toBe(200);
+    const prefix = await runInDurableObject(await a.sandbox(), (i) => i.media.sessionPrefix);
+    const key = `${prefix}posts/${draft}/private.png`;
+    // Its own URL, its full R2 key, and the key reached by climbing out of the seed prefix.
+    for (const path of [own, `/media/${key}`, `/media/..%2F..%2F${encodeURIComponent(key)}`]) {
+      const res = await SELF.fetch(`${BASE}${path}`, {
+        headers: { "cf-connecting-ip": "198.51.100.210" },
+      });
+      expect(res.status, path).toBe(404);
+      expect(res.headers.get("set-cookie"), path).toBeNull();
+      await res.arrayBuffer();
+    }
   });
 });
