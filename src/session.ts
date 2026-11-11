@@ -13,6 +13,16 @@
  */
 export const SESSION_COOKIE = "__Host-kestrel_demo";
 
+/**
+ * The query parameter the first-visit redirect adds, so the Worker can tell a client that
+ * followed it without returning the cookie (it never will) from one that hasn't been sent
+ * yet, and stop rather than loop. It never reaches a sandbox: a GET that carries it with a
+ * valid cookie is sent back to the address without it, and any other method has it removed.
+ * It lives here, not in the Worker's entry module, because the runtime takes every export of
+ * that module for a handler and refuses to start on a string.
+ */
+export const COOKIE_CHECK_PARAM = "demo-cookie";
+
 /** The cookie's lifetime. Sandboxes expire on their own idle TTL (#8); this only has to
  *  outlive it, so a returning visitor keeps their sandbox until then. */
 const COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60;
