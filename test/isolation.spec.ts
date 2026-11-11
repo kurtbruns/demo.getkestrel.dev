@@ -127,7 +127,9 @@ describe("a post published in one sandbox", () => {
     const back = await SELF.fetch(new URL(first.headers.get("location") ?? "", BASE), opts);
     expect(back.status).toBe(403);
     const text = await back.text();
-    expect(text).not.toContain(MARKER);
+    // The page links back to the address asked for (which names the slug), and shows nothing else of it.
+    expect(text).toContain(`href="${BASE}/archive/${slug}"`);
+    expect(text.replaceAll(/href="[^"]*"/g, "")).not.toContain(MARKER);
     expect(text).toContain("didn't send the cookie back");
   });
 

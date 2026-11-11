@@ -40,27 +40,34 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
         }
         return res;
       };
-      if (!v.cookie && (init.method ?? "GET").toUpperCase() === "GET") {
-        // A first visit: the Worker sets a cookie and sends the visitor back to the same
-        // address to check it comes back, then on to the address itself.
-        const first = await send(`${BASE}${path}`, { ...init, redirect: "manual" });
-        const location = first.headers.get("location");
-        const gate = first.status === 303 && location?.includes(`${COOKIE_CHECK_PARAM}=`);
-        if (!gate || !location || !v.cookie) {
-          if (init.redirect === "manual" || !location) {
-            return first;
-          }
-          await first.arrayBuffer();
-          return send(new URL(location, BASE).href, init);
-        }
-        await first.arrayBuffer();
-        const back = await send(new URL(location, BASE).href, { ...init, redirect: "manual" });
-        if (back.status !== 303) {
-          return back;
-        }
-        await back.arrayBuffer();
+      if (
+        v.cookie ||
+        init.redirect === "manual" ||
+        (init.method ?? "GET").toUpperCase() !== "GET"
+      ) {
+        return send(`${BASE}${path}`, init);
       }
-      return send(`${BASE}${path}`, init);
+      // A first visit: the Worker sets a cookie and sends the visitor back to the same address
+      // to check it comes back, then on to the address itself. Followed to where each redirect
+      // actually points, as a browser does, so a redirect that lost part of the address shows.
+      let url = `${BASE}${path}`;
+      for (let hop = 0; hop < 4; hop++) {
+        const res = await send(url, { ...init, redirect: "manual" });
+        const location = res.headers.get("location");
+        if (!location || res.status < 300 || res.status >= 400) {
+          return res;
+        }
+        await res.arrayBuffer();
+        const next = new URL(location, url).href;
+        const gate =
+          res.status === 303 &&
+          (next.includes(`${COOKIE_CHECK_PARAM}=`) || url.includes(`${COOKIE_CHECK_PARAM}=`));
+        if (!gate) {
+          return send(next, init);
+        }
+        url = next;
+      }
+      throw new Error(`the first-visit redirects for ${path} didn't end`);
     },
     async json<T>(path: string, init?: RequestInit) {
       const res = await v.fetch(path, init);

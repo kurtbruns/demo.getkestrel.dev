@@ -54,32 +54,90 @@ const TOO_MANY = `<!doctype html>
 /**
  * The query parameter the first-visit redirect adds, so the Worker can tell a client that
  * followed it without returning the cookie (it never will) from one that hasn't been sent
- * yet, and stop rather than loop. It never reaches a sandbox: a request that carries it
- * with a valid cookie is sent back to the address without it.
+ * yet, and stop rather than loop. It never reaches a sandbox: a GET that carries it with a
+ * valid cookie is sent back to the address without it, and any other method has it removed.
  */
 export const COOKIE_CHECK_PARAM = "demo-cookie";
 
-/** What a client that doesn't return cookies gets: a person whose browser blocks them, or
- *  a link preview, image proxy or scanner, none of which needs a sandbox. */
-const NEEDS_COOKIES = `<!doctype html>
+/** HTML-escape `s` for an attribute or text. */
+function escapeHtml(s: string): string {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+/**
+ * What a client that doesn't return cookies gets: a person whose browser blocks them, or a
+ * link preview, image proxy or scanner, none of which needs a sandbox. A person may also be
+ * here because someone shared an address that still carried the cookie check, so the page
+ * links to that address without it, which a browser that keeps cookies opens normally.
+ */
+function needsCookiesPage(retry: string): string {
+  return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>Kestrel live demo</title>
 <body style="font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 15vh auto; padding: 0 1rem">
 <h1 style="font-size: 1.4rem">Kestrel live demo</h1>
 <p>Each visitor to the Kestrel demo gets a private sandbox of their own, which this browser's session cookie keeps track of. This browser didn't send the cookie back, so there's no sandbox to show.</p>
-<p>Open <a href="/dashboard/">the demo</a> in a browser that allows cookies for demo.getkestrel.dev.</p>
+<p>If this browser allows cookies for demo.getkestrel.dev, <a href="${escapeHtml(retry)}">open this page again</a>. Otherwise, open <a href="/dashboard/">the demo</a> in a browser that does.</p>
 </body></html>
 `;
+}
 
-/** `url` with the cookie check added or removed, as a same-origin path. */
+/** The query string's parts, as sent: never decoded or re-encoded. */
+function queryParts(url: URL): string[] {
+  return url.search
+    .slice(1)
+    .split("&")
+    .filter((part) => part !== "");
+}
+
+/** Whether `url` carries the cookie check, with any value. */
+function hasCookieCheck(url: URL): boolean {
+  return queryParts(url).some((part) => part.split("=")[0] === COOKIE_CHECK_PARAM);
+}
+
+/**
+ * `url` with the cookie check added or removed, every other part of the query left as sent.
+ * Absolute, on the request's own origin: a path alone that starts `//` (`//evil.com/x`, which
+ * `/\evil.com/x` also parses to) would send the browser to another host.
+ */
 function withCookieCheck(url: URL, on: boolean): string {
-  const out = new URL(url);
+  const parts = queryParts(url).filter((part) => part.split("=")[0] !== COOKIE_CHECK_PARAM);
   if (on) {
-    out.searchParams.set(COOKIE_CHECK_PARAM, "1");
-  } else {
-    out.searchParams.delete(COOKIE_CHECK_PARAM);
+    parts.push(`${COOKIE_CHECK_PARAM}=1`);
   }
-  return out.pathname + out.search;
+  return `${url.origin}${url.pathname}${parts.length > 0 ? `?${parts.join("&")}` : ""}`;
+}
+
+/**
+ * Whether a request comes from the demo's own pages' scripts rather than a navigation: the
+ * dashboard's first call, made with no cookie yet and `redirect: "manual"`, which can't
+ * follow the cookie check (Kestrel's client/auth.ts). A browser sets these headers and a page
+ * can't; another client can, but gains nothing a client that keeps cookies doesn't have, and
+ * still spends the new-session limit.
+ */
+function isOwnPageFetch(request: Request): boolean {
+  return (
+    request.headers.get("sec-fetch-site") === "same-origin" &&
+    request.headers.get("sec-fetch-mode") !== "navigate"
+  );
+}
+
+/** Who started a session, for checking in the logs which clients still start sandboxes. */
+function logSessionStart(via: string, request: Request): void {
+  const h = request.headers;
+  // biome-ignore lint/suspicious/noConsole: the Worker's log line for a session's first request.
+  console.log("demo.session_started", {
+    via,
+    path: new URL(request.url).pathname,
+    ua: h.get("user-agent"),
+    secFetchSite: h.get("sec-fetch-site"),
+    secFetchMode: h.get("sec-fetch-mode"),
+    secFetchDest: h.get("sec-fetch-dest"),
+  });
 }
 
 /**
@@ -108,12 +166,15 @@ export function rateLimitKey(ip: string | null): string {
 /**
  * A sandbox's response, made safe to send: no shared cache may keep it (Kestrel marks its
  * public pages and media `public`, but here every page is one visitor's own), its HTML is
- * always revalidated. A sandbox's response never carries a new cookie: the first-visit
- * redirect does, and is never stored.
+ * always revalidated, and a response that starts a session (the dashboard's first call,
+ * which skips the cookie check) is never stored at all, since it carries the cookie.
  */
-function privately(response: Response): Response {
+function privately(response: Response, newCookie?: string): Response {
   const out = new Response(response.body, response);
-  if (out.headers.get("content-type")?.startsWith("text/html")) {
+  if (newCookie) {
+    out.headers.set("cache-control", "private, no-store");
+    out.headers.append("set-cookie", sessionCookie(newCookie));
+  } else if (out.headers.get("content-type")?.startsWith("text/html")) {
     // A sandbox's pages change under the visitor (an edit, a reset, the idle wipe), so the
     // browser revalidates them rather than showing a stale copy for Kestrel's 5 to 60
     // minutes.
@@ -187,8 +248,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response("The demo is misconfigured: SESSION_SECRET is not set.", { status: 500 });
   }
 
-  const token = await readSession(request, secret);
-  const checking = url.searchParams.has(COOKIE_CHECK_PARAM);
+  let token = await readSession(request, secret);
+  let newCookie: string | undefined;
+  const checking = hasCookieCheck(url);
   if (url.pathname === RESET_PATH && request.method === "POST") {
     if (!token) {
       // No sandbox to reset (an expired cookie, say): back to the editor, which starts one.
@@ -222,7 +284,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     }
     if (checking) {
       // Sent a cookie a moment ago and didn't return it: no sandbox, and no new cookie.
-      return new Response(NEEDS_COOKIES, {
+      return new Response(needsCookiesPage(withCookieCheck(url, false)), {
         status: 403,
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
@@ -240,23 +302,34 @@ async function route(request: Request, env: Env): Promise<Response> {
         },
       });
     }
-    // The new session's cookie, and the same address back. Its sandbox starts on the
-    // request that returns the cookie, so a client that doesn't costs a signature, not a
-    // migrate and a seed.
     const session = await mintSession(secret);
-    const headers = new Headers({
-      location: withCookieCheck(url, true),
-      "cache-control": "no-store",
-    });
-    headers.append("set-cookie", sessionCookie(session.value));
-    return new Response(null, { status: 303, headers });
-  }
-  if (checking && request.method === "GET") {
-    // The cookie came back: on to the address the visitor asked for.
-    return new Response(null, {
-      status: 303,
-      headers: { location: withCookieCheck(url, false), "cache-control": "no-store" },
-    });
+    if (isOwnPageFetch(request)) {
+      // The dashboard's first call: its sandbox starts now, and the cookie rides on its answer.
+      token = session.token;
+      newCookie = session.value;
+      logSessionStart("own_page_fetch", request);
+    } else {
+      // The new session's cookie, and the same address back. Its sandbox starts on the
+      // request that returns the cookie, so a client that doesn't costs a signature, not a
+      // migrate and a seed.
+      const headers = new Headers({
+        location: withCookieCheck(url, true),
+        "cache-control": "no-store",
+      });
+      headers.append("set-cookie", sessionCookie(session.value));
+      return new Response(null, { status: 303, headers });
+    }
+  } else if (checking) {
+    if (request.method === "GET") {
+      // The cookie came back: on to the address the visitor asked for.
+      logSessionStart("cookie_check", request);
+      return new Response(null, {
+        status: 303,
+        headers: { location: withCookieCheck(url, false), "cache-control": "no-store" },
+      });
+    }
+    // Any other method: the parameter is the Worker's, so the sandbox never sees it.
+    request = new Request(withCookieCheck(url, false), request);
   }
 
   const sandbox = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(secret, token)));
@@ -264,8 +337,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   try {
     response = await sandbox.fetch(request);
   } catch (err) {
-    // The sandbox couldn't start (a migrate or seed that threw) or broke. Say so and log
-    // it; the visitor keeps their cookie, so a reload retries the same sandbox.
+    // The sandbox couldn't start (a migrate or seed that threw) or broke. Say so, log it,
+    // and still hand over a new session's cookie, so a reload retries the same sandbox
+    // rather than starting another.
     // biome-ignore lint/suspicious/noConsole: the Worker's only log line for a broken sandbox.
     console.error("demo.sandbox_failed", err);
     response = Response.json(
@@ -276,5 +350,5 @@ async function route(request: Request, env: Env): Promise<Response> {
       { status: 503, headers: { "retry-after": "5" } },
     );
   }
-  return privately(response);
+  return privately(response, newCookie);
 }
