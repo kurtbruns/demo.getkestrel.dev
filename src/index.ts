@@ -13,7 +13,13 @@
 import "./egress-install";
 import { BUILD_INFO } from "kestrel";
 import { RESET_PATH } from "./sandbox_do";
-import { mintSession, readSession, sandboxName, sessionCookie } from "./session";
+import {
+  COOKIE_CHECK_PARAM,
+  mintSession,
+  readSession,
+  sandboxName,
+  sessionCookie,
+} from "./session";
 
 export { SandboxDO } from "./sandbox_do";
 
@@ -50,14 +56,6 @@ const TOO_MANY = `<!doctype html>
 <p>If you already have a demo open, keep using that tab: its sandbox is still there.</p>
 </body></html>
 `;
-
-/**
- * The query parameter the first-visit redirect adds, so the Worker can tell a client that
- * followed it without returning the cookie (it never will) from one that hasn't been sent
- * yet, and stop rather than loop. It never reaches a sandbox: a GET that carries it with a
- * valid cookie is sent back to the address without it, and any other method has it removed.
- */
-export const COOKIE_CHECK_PARAM = "demo-cookie";
 
 /** HTML-escape `s` for an attribute or text. */
 function escapeHtml(s: string): string {

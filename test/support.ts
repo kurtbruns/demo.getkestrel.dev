@@ -4,9 +4,8 @@
 // just given, so a test's first request is answered by the visitor's new sandbox.
 
 import { env, SELF } from "cloudflare:test";
-import { COOKIE_CHECK_PARAM } from "../src/index";
 import type { SandboxDO } from "../src/sandbox_do";
-import { SESSION_COOKIE, sandboxName } from "../src/session";
+import { COOKIE_CHECK_PARAM, SESSION_COOKIE, sandboxName } from "../src/session";
 
 export const BASE = "https://demo.getkestrel.dev";
 

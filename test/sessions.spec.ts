@@ -4,8 +4,8 @@
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { COOKIE_CHECK_PARAM, rateLimitKey } from "../src/index";
-import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
+import { rateLimitKey } from "../src/index";
+import { COOKIE_CHECK_PARAM, mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
 import { BASE, exhaustNewSessions, SAME_ORIGIN, visitor } from "./support";
 
 const SECRET = (env as unknown as { SESSION_SECRET: string }).SESSION_SECRET;
