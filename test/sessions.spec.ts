@@ -4,7 +4,7 @@
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { rateLimitKey } from "../src/index";
+import { COOKIE_CHECK_PARAM, rateLimitKey } from "../src/index";
 import { mintSession, SESSION_COOKIE, sandboxName } from "../src/session";
 import { BASE, exhaustNewSessions, SAME_ORIGIN, visitor } from "./support";
 
@@ -25,16 +25,62 @@ async function seedCount(stub: DurableObjectStub): Promise<number> {
   });
 }
 
+/** Whether a sandbox has started: migrated and seeded, so its storage holds tables. */
+async function started(stub: DurableObjectStub): Promise<boolean> {
+  return runInDurableObject(stub, (_instance, state) => {
+    const row = state.storage.sql
+      .exec<{ n: number }>("SELECT count(*) AS n FROM sqlite_master WHERE name = 'demo_meta'")
+      .one();
+    return row.n > 0;
+  });
+}
+
+/** The sandbox a `Set-Cookie` header's session selects. */
+async function sandboxOf(setCookie: string | null): Promise<DurableObjectStub> {
+  const token = (setCookie ?? "").slice(`${SESSION_COOKIE}=`.length).split(".")[0] ?? "";
+  return env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(SECRET, token)));
+}
+
 describe("a first visit", () => {
-  it("gets a signed session cookie and a seeded sandbox", async () => {
-    const v = visitor();
-    const res = await v.fetch("/api/posts");
-    expect(res.status).toBe(200);
-    const set = res.headers.get("set-cookie") ?? "";
+  it("gets a signed cookie and a redirect back, and its sandbox starts once the cookie returns", async () => {
+    const opts = { headers: { "cf-connecting-ip": "192.0.2.90" }, redirect: "manual" } as const;
+    const first = await SELF.fetch(`${BASE}/api/posts?status=draft`, opts);
+    expect(first.status).toBe(303);
+    expect(first.headers.get("location")).toBe(`/api/posts?status=draft&${COOKIE_CHECK_PARAM}=1`);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    const set = first.headers.get("set-cookie") ?? "";
     expect(set).toMatch(new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43}\\.[A-Za-z0-9_-]{43};`));
     for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"]) {
       expect(set).toContain(attr);
     }
+    const sandbox = await sandboxOf(set);
+    expect(await started(sandbox)).toBe(false);
+    const cookie = set.split(";")[0] ?? "";
+    // The cookie came back: on to the address asked for, still with no sandbox started.
+    const back = await SELF.fetch(new URL(first.headers.get("location") ?? "", BASE), {
+      headers: { ...opts.headers, cookie },
+      redirect: "manual",
+    });
+    expect(back.status).toBe(303);
+    expect(back.headers.get("location")).toBe("/api/posts?status=draft");
+    expect(back.headers.get("set-cookie")).toBeNull();
+    expect(await started(sandbox)).toBe(false);
+    const res = await SELF.fetch(`${BASE}/api/posts?status=draft`, {
+      headers: { ...opts.headers, cookie },
+    });
+    expect(res.status).toBe(200);
+    await res.arrayBuffer();
+    expect(await seedCount(sandbox)).toBe(1);
+    expect(await started(sandbox)).toBe(true);
+  });
+
+  it("is answered by the visitor's new, seeded sandbox once the cookie check passes", async () => {
+    const v = visitor();
+    const res = await v.fetch("/api/posts");
+    expect(res.status).toBe(200);
+    expect(v.cookie).toMatch(
+      new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43}\\.[A-Za-z0-9_-]{43}$`),
+    );
     const body = (await res.json()) as PostList;
     expect(body.page.total).toBeGreaterThanOrEqual(7);
     expect(body.posts.map((p) => p.subject)).toContain("Try editing this draft");
@@ -112,8 +158,9 @@ describe("a session", () => {
     for (const cookie of [tampered, forged, `${name}=garbage`]) {
       const res = await SELF.fetch(`${BASE}/api/posts`, {
         headers: { cookie, "cf-connecting-ip": "192.0.2.77" },
+        redirect: "manual",
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(303);
       const set = res.headers.get("set-cookie") ?? "";
       expect(set.startsWith(`${SESSION_COOKIE}=`)).toBe(true);
       expect(set).not.toContain(token);
@@ -121,10 +168,55 @@ describe("a session", () => {
   });
 });
 
+describe("a client that doesn't return the cookie", () => {
+  // A link preview, an image proxy, a scanner: each fetches an address once, with no cookie,
+  // and never sends back the one it's given.
+  it("gets one redirect and then a static page, and never starts a sandbox", async () => {
+    const opts = { headers: { "cf-connecting-ip": "192.0.2.120" }, redirect: "manual" } as const;
+    for (const path of [
+      "/",
+      "/archive/some-post",
+      "/media/branding/logo/1794412141798-c3f39293",
+      "/media/posts/5eed0002-0000-4000-8000-000000000002/kestrel.webp",
+      "/.env",
+      "/wp-login.php?redirect_to=x",
+      "/api/posts",
+    ]) {
+      const first = await SELF.fetch(`${BASE}${path}`, opts);
+      expect(first.status, path).toBe(303);
+      const location = first.headers.get("location") ?? "";
+      expect(location, path).toContain(`${COOKIE_CHECK_PARAM}=1`);
+      const back = await SELF.fetch(new URL(location, BASE), opts);
+      expect(back.status, path).toBe(403);
+      expect(back.headers.get("set-cookie"), path).toBeNull();
+      expect(back.headers.get("cache-control"), path).toBe("no-store");
+      expect(back.headers.get("x-robots-tag"), path).toBe("noindex");
+      expect(await back.text(), path).toContain("didn't send the cookie back");
+      expect(await started(await sandboxOf(first.headers.get("set-cookie"))), path).toBe(false);
+    }
+  });
+
+  it("costs nothing when it arrives already carrying the cookie check", async () => {
+    // A redirect target that was shared or crawled: no cookie, no new one, no rate limit.
+    const ip = "192.0.2.121";
+    for (let i = 0; i < 15; i++) {
+      const res = await SELF.fetch(`${BASE}/?${COOKIE_CHECK_PARAM}=1`, {
+        headers: { "cf-connecting-ip": ip },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(403);
+      expect(res.headers.get("set-cookie")).toBeNull();
+      await res.arrayBuffer();
+    }
+    const { statuses } = await exhaustNewSessions(ip);
+    expect(statuses.slice(0, 10)).toEqual(Array(10).fill(303));
+  });
+});
+
 describe("the new-session rate limit", () => {
   it("answers 429 past the per-IP limit, without a cookie or a sandbox", async () => {
     const { statuses, refused } = await exhaustNewSessions("203.0.113.9");
-    expect(statuses.slice(0, 10)).toEqual(Array(10).fill(200));
+    expect(statuses.slice(0, 10)).toEqual(Array(10).fill(303));
     expect(refused?.status).toBe(429);
     expect(refused?.headers.get("set-cookie")).toBeNull();
     expect(refused?.headers.get("content-type")).toContain("text/html");
@@ -214,12 +306,15 @@ describe("hardening", () => {
   });
 
   it("never lets a shared cache keep a sandbox's response", async () => {
-    const v = visitor();
-    const first = await v.fetch("/");
+    // The redirect that carries a new cookie is never stored.
+    const first = await SELF.fetch(`${BASE}/`, {
+      headers: { "cf-connecting-ip": "192.0.2.91" },
+      redirect: "manual",
+    });
+    expect(first.status).toBe(303);
     expect(first.headers.get("set-cookie")).not.toBeNull();
-    expect(first.headers.get("cache-control")).toBe("private, no-store");
-    expect(first.headers.get("vary")).toMatch(/cookie/i);
-    await first.arrayBuffer();
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    const v = visitor();
     // Kestrel marks its landing page `public, max-age=300`; in a sandbox it's private and
     // revalidated, so a reset or an edit shows at once.
     const again = await v.fetch("/");

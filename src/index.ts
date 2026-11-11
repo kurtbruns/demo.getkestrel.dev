@@ -3,13 +3,15 @@
  * assets before this runs (wrangler.jsonc), the same bytes for every visitor. Everything
  * else is answered by the visitor's own sandbox, a Durable Object their session cookie
  * selects (src/session.ts), so a visitor can only ever see their own sandbox. A first
- * visit (a GET with no valid cookie) gets a new session, rate-limited per network.
+ * visit (a GET with no valid cookie) gets a new session, rate-limited per network, and a
+ * redirect back to the same address: its sandbox starts only once the cookie comes back,
+ * so a client that never returns cookies (a link preview, an image proxy, a scanner)
+ * never starts one (DESIGN.md, "Session identity").
  */
 
 // First, before Kestrel's modules evaluate: no request may leave the demo (src/egress.ts).
 import "./egress-install";
 import { BUILD_INFO } from "kestrel";
-import { serveSeedMedia } from "./media";
 import { RESET_PATH } from "./sandbox_do";
 import { mintSession, readSession, sandboxName, sessionCookie } from "./session";
 
@@ -50,6 +52,37 @@ const TOO_MANY = `<!doctype html>
 `;
 
 /**
+ * The query parameter the first-visit redirect adds, so the Worker can tell a client that
+ * followed it without returning the cookie (it never will) from one that hasn't been sent
+ * yet, and stop rather than loop. It never reaches a sandbox: a request that carries it
+ * with a valid cookie is sent back to the address without it.
+ */
+export const COOKIE_CHECK_PARAM = "demo-cookie";
+
+/** What a client that doesn't return cookies gets: a person whose browser blocks them, or
+ *  a link preview, image proxy or scanner, none of which needs a sandbox. */
+const NEEDS_COOKIES = `<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Kestrel live demo</title>
+<body style="font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 15vh auto; padding: 0 1rem">
+<h1 style="font-size: 1.4rem">Kestrel live demo</h1>
+<p>Each visitor to the Kestrel demo gets a private sandbox of their own, which this browser's session cookie keeps track of. This browser didn't send the cookie back, so there's no sandbox to show.</p>
+<p>Open <a href="/dashboard/">the demo</a> in a browser that allows cookies for demo.getkestrel.dev.</p>
+</body></html>
+`;
+
+/** `url` with the cookie check added or removed, as a same-origin path. */
+function withCookieCheck(url: URL, on: boolean): string {
+  const out = new URL(url);
+  if (on) {
+    out.searchParams.set(COOKIE_CHECK_PARAM, "1");
+  } else {
+    out.searchParams.delete(COOKIE_CHECK_PARAM);
+  }
+  return out.pathname + out.search;
+}
+
+/**
  * The rate limit's key: the client's IPv4 address, or its IPv6 /64. One IPv6 client usually
  * holds a whole /64 and can rotate addresses within it, so keying on the full address would
  * be no limit at all. Cloudflare always sets `cf-connecting-ip` in production.
@@ -75,15 +108,12 @@ export function rateLimitKey(ip: string | null): string {
 /**
  * A sandbox's response, made safe to send: no shared cache may keep it (Kestrel marks its
  * public pages and media `public`, but here every page is one visitor's own), its HTML is
- * always revalidated, and a response that starts a session is never stored at all, since
- * it carries the cookie.
+ * always revalidated. A sandbox's response never carries a new cookie: the first-visit
+ * redirect does, and is never stored.
  */
-function privately(response: Response, newCookie: string | undefined): Response {
+function privately(response: Response): Response {
   const out = new Response(response.body, response);
-  if (newCookie) {
-    out.headers.set("cache-control", "private, no-store");
-    out.headers.append("set-cookie", sessionCookie(newCookie));
-  } else if (out.headers.get("content-type")?.startsWith("text/html")) {
+  if (out.headers.get("content-type")?.startsWith("text/html")) {
     // A sandbox's pages change under the visitor (an edit, a reset, the idle wipe), so the
     // browser revalidates them rather than showing a stale copy for Kestrel's 5 to 60
     // minutes.
@@ -157,8 +187,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response("The demo is misconfigured: SESSION_SECRET is not set.", { status: 500 });
   }
 
-  let token = await readSession(request, secret);
-  let newCookie: string | undefined;
+  const token = await readSession(request, secret);
+  const checking = url.searchParams.has(COOKIE_CHECK_PARAM);
   if (url.pathname === RESET_PATH && request.method === "POST") {
     if (!token) {
       // No sandbox to reset (an expired cookie, say): back to the editor, which starts one.
@@ -179,16 +209,6 @@ async function route(request: Request, env: Env): Promise<Response> {
       });
     }
   }
-  if (!token && request.method === "GET" && url.pathname.startsWith("/media/")) {
-    // Media with no session: a link preview or image proxy fetching a URL a visitor's page
-    // named. A new sandbox would answer it from the shared seed images and nothing else, so
-    // answer it from there without starting one, which would cost a migrate and a seed and
-    // be discarded with its cookie (DESIGN.md, "Media").
-    return privately(
-      await serveSeedMedia(env.MEDIA, url.pathname.slice("/media/".length)),
-      undefined,
-    );
-  }
   if (!token) {
     // Only a GET starts a session. The editor's first requests are GETs; a cookieless
     // write is another site's form posting here (a SameSite=Lax cookie isn't sent on a
@@ -199,6 +219,13 @@ async function route(request: Request, env: Env): Promise<Response> {
         { error: "no_session", message: "open the demo in a browser first" },
         { status: 403 },
       );
+    }
+    if (checking) {
+      // Sent a cookie a moment ago and didn't return it: no sandbox, and no new cookie.
+      return new Response(NEEDS_COOKIES, {
+        status: 403,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
     }
     const { success } = await env.NEW_SESSIONS.limit({
       key: rateLimitKey(request.headers.get("cf-connecting-ip")),
@@ -213,9 +240,23 @@ async function route(request: Request, env: Env): Promise<Response> {
         },
       });
     }
+    // The new session's cookie, and the same address back. Its sandbox starts on the
+    // request that returns the cookie, so a client that doesn't costs a signature, not a
+    // migrate and a seed.
     const session = await mintSession(secret);
-    token = session.token;
-    newCookie = session.value;
+    const headers = new Headers({
+      location: withCookieCheck(url, true),
+      "cache-control": "no-store",
+    });
+    headers.append("set-cookie", sessionCookie(session.value));
+    return new Response(null, { status: 303, headers });
+  }
+  if (checking && request.method === "GET") {
+    // The cookie came back: on to the address the visitor asked for.
+    return new Response(null, {
+      status: 303,
+      headers: { location: withCookieCheck(url, false), "cache-control": "no-store" },
+    });
   }
 
   const sandbox = env.SANDBOX.get(env.SANDBOX.idFromName(await sandboxName(secret, token)));
@@ -223,9 +264,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   try {
     response = await sandbox.fetch(request);
   } catch (err) {
-    // The sandbox couldn't start (a migrate or seed that threw) or broke. Say so, log it,
-    // and still hand over a new session's cookie, so a reload retries the same sandbox
-    // rather than starting another.
+    // The sandbox couldn't start (a migrate or seed that threw) or broke. Say so and log
+    // it; the visitor keeps their cookie, so a reload retries the same sandbox.
     // biome-ignore lint/suspicious/noConsole: the Worker's only log line for a broken sandbox.
     console.error("demo.sandbox_failed", err);
     response = Response.json(
@@ -236,5 +276,5 @@ async function route(request: Request, env: Env): Promise<Response> {
       { status: 503, headers: { "retry-after": "5" } },
     );
   }
-  return privately(response, newCookie);
+  return privately(response);
 }

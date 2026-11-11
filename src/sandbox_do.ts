@@ -10,7 +10,7 @@ import kestrel, { BUILD_INFO, type KestrelEnv, migrations } from "kestrel";
 import { DurableObjectD1 } from "./d1/adapter";
 import { migrate } from "./d1/migrate";
 import { egress } from "./egress";
-import { MAX_OBJECT_BYTES, SandboxMedia, SEED_PREFIX } from "./media";
+import { MAX_OBJECT_BYTES, SandboxMedia } from "./media";
 import { checkSandboxConfig, ensureSeeded, sandboxEnv } from "./sandbox";
 
 /** Kestrel's sweep runs once a minute; a send in flight is swept again a tick later. */
@@ -63,7 +63,7 @@ export class SandboxDO extends DurableObject<Env> {
     this.env.MEDIA,
     this.ctx.storage.sql,
     `sessions/${this.ctx.id.toString()}/`,
-    SEED_PREFIX,
+    `seed/${BUILD_INFO.tag}/`,
   );
   private readonly kenv: KestrelEnv = sandboxEnv(this.env, this.db.asD1(), this.media.asR2());
   /** The seed's env: the same, but with the only media view that writes the shared seed

@@ -1,11 +1,11 @@
 // A sandbox's media (src/media.ts): scoped to the session's own R2 prefix, sharing one copy
 // of the seed's images, capped, and never cached for anyone else.
 
-import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { MAX_OBJECT_BYTES, SandboxMedia, SEED_LOGO_KEY } from "../src/media";
 import { ensureSeeded, sandboxEnv } from "../src/sandbox";
-import { BASE, exhaustNewSessions, png, SAME_ORIGIN, type Visitor, visitor } from "./support";
+import { png, SAME_ORIGIN, type Visitor, visitor } from "./support";
 
 interface PostList {
   posts: { id: string; status: string }[];
@@ -57,9 +57,6 @@ describe("seed images", () => {
   it("are served in every sandbox from one shared copy", async () => {
     const a = visitor();
     const b = visitor();
-    // Start both sessions first: a cookieless media request starts none (below).
-    await a.fetch("/api/posts");
-    await b.fetch("/api/posts");
     const fromA = await a.fetch(COVER);
     const fromB = await b.fetch(COVER);
     expect(fromA.status).toBe(200);
@@ -98,70 +95,6 @@ describe("seed images", () => {
     expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(res.headers.get("vary")).toContain("Cookie");
     await res.arrayBuffer();
-  });
-});
-
-describe("media with no session", () => {
-  // A link preview or image proxy fetching a URL a visitor's page named: answered from the
-  // shared seed prefix, as a fresh sandbox would, without starting one.
-  const bare = (path: string, ip: string) =>
-    SELF.fetch(`${BASE}${path}`, { headers: { "cf-connecting-ip": ip } });
-
-  it("serves a seed image without a cookie, a sandbox or the new-session limit", async () => {
-    const v = visitor();
-    await v.fetch("/api/posts"); // one sandbox has seeded this release
-    const seeded = await v.fetch(COVER);
-    const ip = "198.51.100.200";
-    const { refused } = await exhaustNewSessions(ip);
-    expect(refused?.status).toBe(429);
-    await refused?.arrayBuffer();
-    const res = await bare(COVER, ip);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("set-cookie")).toBeNull();
-    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
-    expect(res.headers.get("vary")).toContain("Cookie");
-    expect(res.headers.get("content-type")).toBe(seeded.headers.get("content-type"));
-    expect(res.headers.get("content-length")).toBe(seeded.headers.get("content-length"));
-    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(res.headers.get("content-security-policy")).toBe("sandbox");
-    expect(res.headers.get("x-robots-tag")).toBe("noindex");
-    expect(await bytesOf(res)).toEqual(await bytesOf(seeded));
-  });
-
-  it("404s a sandbox's logo key, as a fresh sandbox would, and starts no session", async () => {
-    const v = visitor();
-    const path = await logoPath(v);
-    expect((await v.fetch(path)).status).toBe(200);
-    const res = await bare(path, "198.51.100.201");
-    expect(res.status).toBe(404);
-    expect(res.headers.get("set-cookie")).toBeNull();
-    expect(await res.json()).toEqual({ error: "not_found", message: "media" });
-  });
-
-  it("answers a missing or malformed key with a 4xx and no session", async () => {
-    for (const [path, status] of [
-      ["/media/posts/none/missing.png", 404],
-      ["/media/", 404],
-      ["/media/a%2F%2Fb", 404],
-      ["/media/..%2F..%2Fx", 404],
-      ["/media/%2Fabs", 404],
-      ["/media/%E0", 400],
-    ] as const) {
-      const res = await bare(path, "198.51.100.202");
-      expect(res.status, path).toBe(status);
-      expect(res.headers.get("set-cookie"), path).toBeNull();
-      expect(res.headers.get("x-robots-tag"), path).toBe("noindex");
-      await res.arrayBuffer();
-    }
-  });
-
-  it("keeps a cookieless HEAD at 403, with no session", async () => {
-    const res = await SELF.fetch(`${BASE}${COVER}`, {
-      method: "HEAD",
-      headers: { "cf-connecting-ip": "198.51.100.203" },
-    });
-    expect(res.status).toBe(403);
-    expect(res.headers.get("set-cookie")).toBeNull();
   });
 });
 

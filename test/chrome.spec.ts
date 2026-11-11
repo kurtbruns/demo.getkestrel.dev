@@ -55,9 +55,11 @@ describe("the public pages", () => {
   it("carry it on the page a browser gets at an address with no page, kept by no shared cache", async () => {
     const first = visitor();
     const opening = await first.fetch("/no-such-page", { headers: BROWSER });
-    // A first visit can land here, so the page is what starts the session.
-    expect(opening.headers.get("set-cookie")).not.toBeNull();
-    expect(opening.headers.get("cache-control")).toBe("private, no-store");
+    // A first visit can land here: after the cookie check, its new sandbox answers.
+    expect(first.cookie).toBeDefined();
+    expect(opening.status).toBe(404);
+    expect(opening.headers.get("set-cookie")).toBeNull();
+    expect(opening.headers.get("cache-control")).toBe("private, no-cache");
     await opening.arrayBuffer();
 
     const v = visitor();

@@ -10,8 +10,7 @@
 //
 // Related tests elsewhere: an upload in one sandbox 404s in another at the same path, and a
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
-// tampered cookie is a new session, not a way in (test/sessions.spec.ts). A cookieless
-// `/media/*` read is answered from the shared seed images only (test/media.spec.ts, and below).
+// tampered cookie is a new session, not a way in (test/sessions.spec.ts).
 
 import { runInDurableObject, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -113,12 +112,23 @@ describe("a post published in one sandbox", () => {
   });
 
   it("404s for a visitor with no cookie, who gets a fresh sandbox of their own", async () => {
-    const res = await SELF.fetch(`${BASE}/archive/${slug}`, {
-      headers: { "cf-connecting-ip": "198.51.100.200" },
-    });
+    const fresh = visitor("198.51.100.200");
+    const res = await fresh.fetch(`/archive/${slug}`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain(MARKER);
-    expect(res.headers.get("set-cookie")).toMatch(new RegExp(`^${SESSION_COOKIE}=`));
+    expect(fresh.cookie).toMatch(new RegExp(`^${SESSION_COOKIE}=`));
+    expect(fresh.cookie).not.toBe(a.cookie);
+  });
+
+  it("shows nothing of it to a client that doesn't return cookies, which gets no sandbox", async () => {
+    const opts = { headers: { "cf-connecting-ip": "198.51.100.199" }, redirect: "manual" } as const;
+    const first = await SELF.fetch(`${BASE}/archive/${slug}`, opts);
+    expect(first.status).toBe(303);
+    const back = await SELF.fetch(new URL(first.headers.get("location") ?? "", BASE), opts);
+    expect(back.status).toBe(403);
+    const text = await back.text();
+    expect(text).not.toContain(MARKER);
+    expect(text).toContain("didn't send the cookie back");
   });
 
   it("can't be reached with a cookie that only resembles A's", async () => {
@@ -126,11 +136,14 @@ describe("a post published in one sandbox", () => {
     const [tokenA] = (valueA ?? "").split(".");
     const [, sigB] = ((b.cookie ?? "").split("=")[1] ?? "").split(".");
     // A's token unsigned, and A's token under B's real signature.
+    // Neither is honored: each is a first visit, a new cookie and a redirect, never A's page.
     for (const cookie of [`${name}=${tokenA}`, `${name}=${tokenA}.${sigB}`]) {
       const res = await SELF.fetch(`${BASE}/archive/${slug}`, {
         headers: { cookie, "cf-connecting-ip": "198.51.100.201" },
+        redirect: "manual",
       });
-      expect(res.status, cookie).toBe(404);
+      expect(res.status, cookie).toBe(303);
+      expect(res.headers.get("set-cookie"), cookie).not.toContain(tokenA);
       expect(await res.text()).not.toContain(MARKER);
     }
   });
@@ -196,10 +209,7 @@ describe("an email-only post's unlisted link", () => {
     const other = await b.fetch(`/email/${token}`);
     expect(other.status).toBe(404);
     expect(await other.text()).not.toContain(marker);
-    const fresh = await SELF.fetch(`${BASE}/email/${token}`, {
-      headers: { "cf-connecting-ip": "198.51.100.202" },
-      redirect: "manual",
-    });
+    const fresh = await visitor("198.51.100.202").fetch(`/email/${token}`);
     expect(fresh.status).toBe(404);
     expect(await fresh.text()).not.toContain(marker);
   });
@@ -335,35 +345,5 @@ describe("noindex", () => {
     expect(refused?.status).toBe(429);
     expect(refused?.headers.get("x-robots-tag")).toBe("noindex");
     await refused?.arrayBuffer();
-  });
-});
-
-describe("an upload in one sandbox", () => {
-  it("can't be read by a request with no cookie, at its path or its R2 key", async () => {
-    const a = visitor();
-    const { body } = await a.json<{ posts: { id: string }[] }>("/api/posts?status=draft");
-    const draft = body.posts[0]?.id;
-    expect(draft).toBeDefined();
-    const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9]);
-    const up = await a.fetch(`/api/posts/${draft}/images?filename=private.png`, {
-      method: "POST",
-      headers: { ...SAME_ORIGIN, "content-type": "image/png" },
-      body: bytes,
-    });
-    expect(up.status).toBe(201);
-    await up.arrayBuffer();
-    const own = `/media/posts/${draft}/private.png`;
-    expect((await a.fetch(own)).status).toBe(200);
-    const prefix = await runInDurableObject(await a.sandbox(), (i) => i.media.sessionPrefix);
-    const key = `${prefix}posts/${draft}/private.png`;
-    // Its own URL, its full R2 key, and the key reached by climbing out of the seed prefix.
-    for (const path of [own, `/media/${key}`, `/media/..%2F..%2F${encodeURIComponent(key)}`]) {
-      const res = await SELF.fetch(`${BASE}${path}`, {
-        headers: { "cf-connecting-ip": "198.51.100.210" },
-      });
-      expect(res.status, path).toBe(404);
-      expect(res.headers.get("set-cookie"), path).toBeNull();
-      await res.arrayBuffer();
-    }
   });
 });
