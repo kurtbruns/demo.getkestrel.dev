@@ -112,12 +112,25 @@ describe("a post published in one sandbox", () => {
   });
 
   it("404s for a visitor with no cookie, who gets a fresh sandbox of their own", async () => {
-    const res = await SELF.fetch(`${BASE}/archive/${slug}`, {
-      headers: { "cf-connecting-ip": "198.51.100.200" },
-    });
+    const fresh = visitor("198.51.100.200");
+    const res = await fresh.fetch(`/archive/${slug}`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain(MARKER);
-    expect(res.headers.get("set-cookie")).toMatch(new RegExp(`^${SESSION_COOKIE}=`));
+    expect(fresh.cookie).toMatch(new RegExp(`^${SESSION_COOKIE}=`));
+    expect(fresh.cookie).not.toBe(a.cookie);
+  });
+
+  it("shows nothing of it to a client that doesn't return cookies, which gets no sandbox", async () => {
+    const opts = { headers: { "cf-connecting-ip": "198.51.100.199" }, redirect: "manual" } as const;
+    const first = await SELF.fetch(`${BASE}/archive/${slug}`, opts);
+    expect(first.status).toBe(303);
+    const back = await SELF.fetch(new URL(first.headers.get("location") ?? "", BASE), opts);
+    expect(back.status).toBe(403);
+    const text = await back.text();
+    // The page links back to the address asked for (which names the slug), and shows nothing else of it.
+    expect(text).toContain(`href="${BASE}/archive/${slug}"`);
+    expect(text.replaceAll(/href="[^"]*"/g, "")).not.toContain(MARKER);
+    expect(text).toContain("didn't send the cookie back");
   });
 
   it("can't be reached with a cookie that only resembles A's", async () => {
@@ -125,11 +138,14 @@ describe("a post published in one sandbox", () => {
     const [tokenA] = (valueA ?? "").split(".");
     const [, sigB] = ((b.cookie ?? "").split("=")[1] ?? "").split(".");
     // A's token unsigned, and A's token under B's real signature.
+    // Neither is honored: each is a first visit, a new cookie and a redirect, never A's page.
     for (const cookie of [`${name}=${tokenA}`, `${name}=${tokenA}.${sigB}`]) {
       const res = await SELF.fetch(`${BASE}/archive/${slug}`, {
         headers: { cookie, "cf-connecting-ip": "198.51.100.201" },
+        redirect: "manual",
       });
-      expect(res.status, cookie).toBe(404);
+      expect(res.status, cookie).toBe(303);
+      expect(res.headers.get("set-cookie"), cookie).not.toContain(tokenA);
       expect(await res.text()).not.toContain(MARKER);
     }
   });
@@ -195,10 +211,7 @@ describe("an email-only post's unlisted link", () => {
     const other = await b.fetch(`/email/${token}`);
     expect(other.status).toBe(404);
     expect(await other.text()).not.toContain(marker);
-    const fresh = await SELF.fetch(`${BASE}/email/${token}`, {
-      headers: { "cf-connecting-ip": "198.51.100.202" },
-      redirect: "manual",
-    });
+    const fresh = await visitor("198.51.100.202").fetch(`/email/${token}`);
     expect(fresh.status).toBe(404);
     expect(await fresh.text()).not.toContain(marker);
   });

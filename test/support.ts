@@ -1,8 +1,10 @@
 // A test visitor: a browser stand-in that keeps the session cookie the Worker sets and
 // comes from its own IP, so tests share neither a sandbox nor a rate-limit bucket unless
-// they mean to.
+// they mean to. Like a browser, it follows the first-visit redirect with the cookie it was
+// just given, so a test's first request is answered by the visitor's new sandbox.
 
 import { env, SELF } from "cloudflare:test";
+import { COOKIE_CHECK_PARAM } from "../src/index";
 import type { SandboxDO } from "../src/sandbox_do";
 import { SESSION_COOKIE, sandboxName } from "../src/session";
 
@@ -25,17 +27,47 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
     ip,
     cookie: undefined,
     async fetch(path, init = {}) {
-      const headers = new Headers(init.headers);
-      headers.set("cf-connecting-ip", ip);
-      if (v.cookie) {
-        headers.set("cookie", v.cookie);
+      const send = async (url: string, opts: RequestInit) => {
+        const headers = new Headers(opts.headers);
+        headers.set("cf-connecting-ip", ip);
+        if (v.cookie) {
+          headers.set("cookie", v.cookie);
+        }
+        const res = await SELF.fetch(url, { ...opts, headers });
+        const set = res.headers.get("set-cookie");
+        if (set) {
+          v.cookie = set.split(";")[0];
+        }
+        return res;
+      };
+      if (
+        v.cookie ||
+        init.redirect === "manual" ||
+        (init.method ?? "GET").toUpperCase() !== "GET"
+      ) {
+        return send(`${BASE}${path}`, init);
       }
-      const res = await SELF.fetch(`${BASE}${path}`, { ...init, headers });
-      const set = res.headers.get("set-cookie");
-      if (set) {
-        v.cookie = set.split(";")[0];
+      // A first visit: the Worker sets a cookie and sends the visitor back to the same address
+      // to check it comes back, then on to the address itself. Followed to where each redirect
+      // actually points, as a browser does, so a redirect that lost part of the address shows.
+      let url = `${BASE}${path}`;
+      for (let hop = 0; hop < 4; hop++) {
+        const res = await send(url, { ...init, redirect: "manual" });
+        const location = res.headers.get("location");
+        if (!location || res.status < 300 || res.status >= 400) {
+          return res;
+        }
+        await res.arrayBuffer();
+        const next = new URL(location, url).href;
+        const gate =
+          res.status === 303 &&
+          (next.includes(`${COOKIE_CHECK_PARAM}=`) || url.includes(`${COOKIE_CHECK_PARAM}=`));
+        if (!gate) {
+          return send(next, init);
+        }
+        url = next;
       }
-      return res;
+      throw new Error(`the first-visit redirects for ${path} didn't end`);
     },
     async json<T>(path: string, init?: RequestInit) {
       const res = await v.fetch(path, init);
@@ -130,7 +162,10 @@ export async function exhaustNewSessions(
 ): Promise<{ statuses: number[]; refused: Response | undefined }> {
   const statuses: number[] = [];
   for (let i = 0; i < 25; i++) {
-    const res = await SELF.fetch(`${BASE}/api/whoami`, { headers: { "cf-connecting-ip": ip } });
+    const res = await SELF.fetch(`${BASE}/api/whoami`, {
+      headers: { "cf-connecting-ip": ip },
+      redirect: "manual",
+    });
     statuses.push(res.status);
     if (res.status === 429) {
       return { statuses, refused: res };
