@@ -222,6 +222,113 @@ describe("a notification to the publisher (since Kestrel 1.23.0 only through the
   });
 });
 
+describe("the publication's clock (since Kestrel 1.24.0 nothing schedules or sends without a time zone)", () => {
+  it("is set by the seed, so a fresh sandbox schedules by local time and sends now", async () => {
+    const v = visitor();
+    const { body } = await v.json<{ settings: { time_zone: string | null } }>("/api/settings");
+    // Kestrel's own seed sets it (demo/publication.md); without it every schedule and send
+    // below would be refused as `time_zone_not_set`.
+    expect(body.settings.time_zone).toBe("America/Los_Angeles");
+    const time = await v.json<{ time_zone: string | null; now_local: string }>("/api/time");
+    expect(time.status).toBe(200);
+    expect(time.body.time_zone).toBe("America/Los_Angeles");
+    expect(time.body.now_local).toContain("Pacific Time");
+
+    // A local time with no offset, as the editor's Send at picker sends it: three days out
+    // on the publication's clock.
+    const local = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    const post = await draftId(v);
+    const scheduled = await v.json<{
+      send: SendView;
+      read_back: { fire_at_local: string };
+    }>(`/api/posts/${post}/schedule`, {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ fire_at: `${local}T09:00` }),
+    });
+    expect(scheduled.status).toBe(201);
+    expect(scheduled.body.send.status).toBe("scheduled");
+    expect(scheduled.body.read_back.fire_at_local).toContain("9:00 AM Pacific Time");
+
+    // A numeric offset is Kestrel's 400 naming the field, in a sandbox as anywhere.
+    const offset = await v.json<{ field: string }>(
+      `/api/sends/${scheduled.body.send.id}/reschedule`,
+      {
+        method: "POST",
+        headers: SAME_ORIGIN,
+        body: JSON.stringify({ fire_at: `${local}T10:00-08:00` }),
+      },
+    );
+    expect(offset.status).toBe(400);
+    expect(offset.body.field).toBe("fire_at");
+
+    // Send now, on another post: a new one, since the seed has two drafts at most.
+    const created = await v.json<{ post: { id: string } }>("/api/posts", {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({
+        subject: "Sent now",
+        slug: `sent-now-${crypto.randomUUID().slice(0, 8)}`,
+        markdown: "Hello.",
+      }),
+    });
+    expect(created.status).toBe(201);
+    const now = await v.json<{ send: SendView }>(`/api/posts/${created.body.post.id}/send`, {
+      method: "POST",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({}),
+    });
+    expect(now.status).toBe(201);
+    expect(now.body.send.status).toBe("scheduled");
+  });
+
+  it("is each sandbox's own: a zone one visitor sets isn't another's", async () => {
+    const a = visitor();
+    const b = visitor();
+    await a.fetch("/api/posts");
+    await b.fetch("/api/posts");
+    const saved = await a.fetch("/api/settings", {
+      method: "PUT",
+      headers: SAME_ORIGIN,
+      body: JSON.stringify({ time_zone: "Asia/Tokyo" }),
+    });
+    expect(saved.status).toBe(200);
+    await saved.arrayBuffer();
+    expect((await a.json<{ time_zone: string }>("/api/time")).body.time_zone).toBe("Asia/Tokyo");
+    expect((await b.json<{ time_zone: string }>("/api/time")).body.time_zone).toBe(
+      "America/Los_Angeles",
+    );
+  });
+});
+
+describe("reports from the provider (since Kestrel 1.24.0 it warns when SES's stop arriving)", () => {
+  it("are never awaited on the fake: no receipts warning, however long ago an email was taken", async () => {
+    const v = visitor();
+    await v.fetch("/api/posts");
+    const stub = await v.sandbox();
+    // The seed records its sent posts as taken by the provider, which starts the wait a
+    // real SES instance would warn about after an hour. Put it a day back.
+    const waiting = await runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec("UPDATE sending SET waiting_since = ?", Date.now() - 86_400_000);
+      return state.storage.sql
+        .exec<{ waiting_since: number | null }>("SELECT waiting_since FROM sending")
+        .one().waiting_since;
+    });
+    expect(waiting).not.toBeNull();
+    const { status, body } = await v.json<{
+      provider: string;
+      warnings: { code: string }[];
+      receipts: unknown;
+      signups: string;
+    }>("/api/provider");
+    expect(status).toBe(200);
+    expect(body.provider).toBe("fake");
+    expect(body.receipts).toBeNull();
+    expect(body.warnings).toEqual([]);
+    expect(body.signups).toBe("open");
+  });
+});
+
 describe("the sandbox config", () => {
   it("runs Kestrel only on the fake transport", () => {
     const fake = sandboxEnv(env, {} as D1Database, {} as R2Bucket);
