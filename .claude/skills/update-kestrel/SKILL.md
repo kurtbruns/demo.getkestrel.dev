@@ -69,15 +69,15 @@ The safety property (DESIGN.md) rests on facts about Kestrel that a release can 
 npm run check && npm test
 (cd vendor/kestrel && npm run typecheck && node scripts/check-css-tokens.mjs)
 (cd vendor/kestrel && npx vitest run --project client && npx vitest run --project shared)
-(cd vendor/kestrel && npx vitest run --project worker)
+npm run test:kestrel
 ```
 
-Kestrel's worker specs on the patched tree have three expected sets of failures (DESIGN.md, "The patch set"):
-- the auth specs, which `0001-demo-auth` changes on purpose (401s, auth mode, and the import specs that commit as a service token or expect the tester's address);
-- the dev-badge specs in `test/archive.spec.ts`, and the web-version specs in `test/render_endpoints.spec.ts` that compare the archive page less the dev pill, and the spec in `test/reader_not_found.spec.ts` that a deployed "No page here" page names no path into `/dashboard`, which `0004-demo-chrome` changes;
-- the import specs in `test/imports.spec.ts` that expect 10,000 rows when the budget says Workers Paid, which `0005-demo-import-limit` caps at 1,000.
+`npm run test:kestrel` runs Kestrel's worker specs on the patched tree and compares what fails with `scripts/kestrel-expected-failures.json`, the specs the patches fail on purpose, by name (DESIGN.md, "The patch set"). Exit 0 means exactly the listed specs failed: there is nothing to re-read. Otherwise read only the difference it prints:
+- **Unexpected failures:** read each one. If it's a patch's intended change for the reason its group gives (a new auth spec expecting a 401, say), add it under that patch and file. If it fits no group, notably a send, notification or fake-transport spec, it's a real finding: stop and report it.
+- **Listed but passing:** check that the patch still takes effect where the spec looked before removing the entry. A patch that silently stopped working looks exactly like this.
+- **Listed but not found:** Kestrel renamed, moved or deleted the spec. Its new name is usually among the unexpected failures; move the entry.
 
-Anything else failing there, notably a send, notification or fake-transport spec, is a real finding. Then run the demo with `npm run dev` and look:
+Rerun until it exits 0, and put what changed in the list, and why, in the PR. Then run the demo with `npm run dev` and look:
 - the dashboard loads a seeded sandbox;
 - an archive page has its cover and the demo chrome;
 - the editor shows the demo chrome and the "Demo sandbox" chip.
@@ -89,6 +89,7 @@ Anything else failing there, notably a send, notification or fake-transport spec
   - the delta report;
   - each patch as applied cleanly, regenerated, or dropped;
   - shim and adapter changes;
+  - `npm run test:kestrel`'s result, and each entry added to or removed from the expected-failures list with why;
   - what you checked by hand.
 - **Issue:** none. A routine bump opens its PR with no issue, and the body carries the context an issue would. File one only when a bump can't land in one PR: a patch that needs the user's decision, or a bump deferred or blocked. Then the PR says `Closes #N` as usual.
 - **Then:** offer to bump getkestrel.dev's `.kestrel-version` too (its `refresh-from-kestrel` skill), so the site's docs match the demo.
