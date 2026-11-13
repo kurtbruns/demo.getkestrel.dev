@@ -1,6 +1,6 @@
 # Design: the per-visitor Kestrel sandbox
 
-demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.24.0; the file references below hold at that tag.
+demo.getkestrel.dev lets anyone open the real Kestrel editor, poke at the "Field Notes" sample publication, schedule a send, and read the public archive, without touching anything real and without any email leaving. This document records how, and why it is built this way. It was written against Kestrel v1.2.0 and last checked against v1.25.0; the file references below hold at that tag.
 
 ## Goals and non-goals
 
@@ -145,7 +145,7 @@ Why a patch set, over the two alternatives considered:
 - **A seam in Kestrel** (an exported `createHandler({ authenticate })`, briefly filed as kurtbruns/kestrel#471 and closed): general and tested upstream, but it would make Kestrel ship, document and maintain an extension point whose only consumer is this demo, which cuts against keeping Kestrel small for self-hosters.
 - **A full fork** (a `kestrel-demo` repo or long-lived branch): no build-time machinery, but every release becomes a merge in a second repo with its own history and CI, which is a lot of process for a few dozen changed lines.
 
-On the patched tree, Kestrel's own client specs, typecheck and CSS token check pass. Its worker specs that assert what the patches change on purpose fail there, and `scripts/kestrel-expected-failures.json` lists each one by file and full test name under the patch that causes it (111 of 2,018 at v1.24.0). The reasons, one per patch:
+On the patched tree, Kestrel's own client specs, typecheck and CSS token check pass. Its worker specs that assert what the patches change on purpose fail there, and `scripts/kestrel-expected-failures.json` lists each one by file and full test name under the patch that causes it (111 of 2,061 at v1.25.0). The reasons, one per patch:
 
 - **`0001-demo-auth`** (97): every request is the demo's one human principal, so a spec that expects a 401 without a credential (or the 400, 403 or 404 a route answers only after the gate let it through), the dev or Access auth mode, or a named person or service token as who acted (whoami, a revision's author, an import's or a send's actor, an action log line, an MCP tool call, Resolve's audit note) gets the demo principal instead.
 - **`0004-demo-chrome`** (12): the demo's split pill replaces Kestrel's dev pill on every page as served, in every mode, and links into `/dashboard` on purpose, so the specs that look for the dev pill, strip it to compare the archive page with the web version, or check that a deployed page names no path into `/dashboard` fail.
@@ -161,11 +161,11 @@ When Kestrel cuts a release: bump `.kestrel-version`, rebuild (which re-applies 
 
 ### The D1-compatible adapter
 
-`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.24.0:
+`env.DB` is an object that implements the slice of the D1 API Kestrel uses, over the DO's synchronous `ctx.storage.sql`. Surveyed at v1.25.0:
 
 - `prepare(sql)` (about 195 call sites), `bind(...values)`, `first()` and `first(column)`, `all()`, `run()`, and `batch(statements)` (32 sites, counting the `batch<T>(` form, in `db/imports`, `db/notifications`, `db/subscribers`, `db/sends`, `db/posts`, `db/seed`, `db/sending`, `send/schedule`, `send/remake`, `send/budget`, and since v1.23.0 `send/describe`, a two-SELECT read).
 - `raw()` and `exec()` appear only as pass-throughs in `send/budget.ts`'s metering wrapper. No call site uses them directly, and nothing uses `dump()` or `withSession()`. The adapter still implements `raw()` and `exec()` so the metering wrapper stays type-correct.
-- Results: `all()` and `run()` return `{ results, success, meta }`. Kestrel reads `meta.changes` (28 sites), so it must be exact: since v1.20.0 an upload claims its name with one `INSERT … ON CONFLICT DO NOTHING` and reads `changes` 0 as the name taken, so a second `cover.jpg` is numbered, never a duplicate. DO SQLite's cursor reports `rowsWritten`, which also counts index writes, so the adapter reads SQLite's own `changes()` (and `last_insert_rowid()`) after each statement and uses `rowsWritten` only to tell whether the statement wrote at all, which a SELECT following a write needs.
+- Results: `all()` and `run()` return `{ results, success, meta }`. Kestrel reads `meta.changes` (29 sites), so it must be exact: since v1.20.0 an upload claims its name with one `INSERT … ON CONFLICT DO NOTHING` and reads `changes` 0 as the name taken, so a second `cover.jpg` is numbered, never a duplicate. DO SQLite's cursor reports `rowsWritten`, which also counts index writes, so the adapter reads SQLite's own `changes()` (and `last_insert_rowid()`) after each statement and uses `rowsWritten` only to tell whether the statement wrote at all, which a SELECT following a write needs.
 - Statement shapes: since v1.9.0 the send loop moves a batch of deliveries with one `UPDATE … FROM json_each(?) … RETURNING` inside a `batch`, and its `meta.changes` must count only the rows it moved. DO SQLite runs it, and `test/d1-adapter.spec.ts` holds the adapter to it. Kestrel's own tests also read `meta.rows_read` and `meta.rows_written` (`test/support/d1_guard.ts`), but only on their own D1, never through the adapter, so it doesn't report them.
 - `batch` must be atomic: all statements commit or none do, which the adapter gets from `ctx.storage.transactionSync`. Since v1.9.0 an import's commit applies the whole plan as one batch (`db/imports`), so a refused row rolls back the import rather than leaving half of it. Kestrel also uses `batch` as a consistent multi-SELECT read (the send list and feed read a sequence number, counts and rows together), so every entry returns its full rows, all read inside that one transaction.
 - Error text matters: `send/schedule.ts` recognizes a double schedule by matching `UNIQUE constraint failed: sends.post_id` in the error message, so the adapter must let SQLite's constraint messages through unchanged.
@@ -221,7 +221,7 @@ The chrome is one element on every surface: Kestrel's dev-only "Open dashboard" 
 
 ### Module-level state in Kestrel
 
-DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.24.0 that is:
+DOs of one class can share an isolate, so anything Kestrel keeps at module scope is shared across the sandboxes in that isolate, not per sandbox. At v1.25.0 that is:
 
 - `providers/fake.ts`: the in-memory `outbox` of every message "sent" and the `sentKeys` map, keyed by batch and address. Both grow without bound in a long-lived isolate.
 - `notify/fake.ts`: the notifications outbox, which grows the same way.

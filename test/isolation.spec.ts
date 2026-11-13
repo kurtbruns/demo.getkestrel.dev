@@ -253,10 +253,17 @@ describe("a block or an erasure in one sandbox", () => {
   let blocked = "";
   let erased = "";
 
-  const lookup = (v: Visitor, email: string) =>
-    v.json<{
-      subscriber?: { status: string; unsubscribe_cause: string | null; suppression: object | null };
-    }>(`/api/subscribers?email=${encodeURIComponent(email)}`);
+  // Since Kestrel 1.25.0 `email` is a filter on the list, which answers one subscriber or
+  // none, so `subscriber` here is the one row, and undefined when the sandbox has no such reader.
+  type Reader = { status: string; unsubscribe_cause: string | null; suppression: object | null };
+  const lookup = async (v: Visitor, email: string) => {
+    const res = await v.json<{ subscribers?: Reader[] }>(
+      `/api/subscribers?email=${encodeURIComponent(email)}`,
+    );
+    const rows = res.body.subscribers ?? [];
+    expect(rows.length, email).toBeLessThanOrEqual(1);
+    return { status: res.status, body: { subscriber: rows[0] } };
+  };
 
   beforeAll(async () => {
     await a.fetch("/api/posts");
