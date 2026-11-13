@@ -257,11 +257,13 @@ describe("Kestrel in a sandbox", () => {
     );
     expect(left).toBe(0);
     // What's left is the address, unsubscribed by the erasure.
-    const remains = await me.json<{ subscriber: Erased }>(
+    // Since Kestrel 1.25.0 `email` is a filter on the list: one subscriber or none.
+    const remains = await me.json<{ subscribers: Erased[] }>(
       `/api/subscribers?email=${encodeURIComponent(reader.email)}`,
     );
     expect(remains.status).toBe(200);
-    expect(remains.body.subscriber).toMatchObject({
+    expect(remains.body.subscribers).toHaveLength(1);
+    expect(remains.body.subscribers[0]).toMatchObject({
       status: "unsubscribed",
       unsubscribe_cause: "erased",
     });
