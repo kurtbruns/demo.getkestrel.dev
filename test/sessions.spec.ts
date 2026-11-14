@@ -198,6 +198,38 @@ describe("a client that doesn't return the cookie", () => {
     }
   });
 
+  it("never starts a sandbox for media, even when the cookie comes back", async () => {
+    // A crawler that keeps cookies for one redirect chain, fetching a logo URL it saw in
+    // another sandbox's page: the check passes, but the answer is a 404 with no sandbox.
+    const headers = { "cf-connecting-ip": "192.0.2.95" };
+    for (const path of [
+      "/media/branding/logo/1794692474422-4057d7fc",
+      "/media/posts/5eed0002-0000-4000-8000-000000000002/kestrel.webp",
+    ]) {
+      const first = await SELF.fetch(`${BASE}${path}`, { headers, redirect: "manual" });
+      expect(first.status, path).toBe(303);
+      const set = first.headers.get("set-cookie");
+      const cookie = (set ?? "").split(";")[0] ?? "";
+      const back = await SELF.fetch(new URL(first.headers.get("location") ?? "", BASE), {
+        headers: { ...headers, cookie },
+        redirect: "manual",
+      });
+      expect(back.status, path).toBe(404);
+      expect(back.headers.get("location"), path).toBeNull();
+      expect(back.headers.get("set-cookie"), path).toBeNull();
+      expect(back.headers.get("cache-control"), path).toBe("private, no-store");
+      expect(back.headers.get("vary"), path).toBe("Cookie");
+      expect(back.headers.get("x-robots-tag"), path).toBe("noindex");
+      await back.arrayBuffer();
+      expect(await started(await sandboxOf(set)), path).toBe(false);
+      // The cookie stays good: a page with it starts the sandbox as usual.
+      const page = await SELF.fetch(`${BASE}/`, { headers: { ...headers, cookie } });
+      expect(page.status, path).toBe(200);
+      await page.arrayBuffer();
+      expect(await started(await sandboxOf(set)), path).toBe(true);
+    }
+  });
+
   it("costs nothing when it arrives already carrying the cookie check", async () => {
     // A redirect target that was shared or crawled: no cookie, no new one, no rate limit.
     const ip = "192.0.2.121";

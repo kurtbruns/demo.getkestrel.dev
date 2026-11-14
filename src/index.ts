@@ -318,6 +318,21 @@ async function route(request: Request, env: Env): Promise<Response> {
       return new Response(null, { status: 303, headers });
     }
   } else if (checking) {
+    if (url.pathname.startsWith("/media/")) {
+      // A new session's first request is for media: a client fetching a URL it saw in some
+      // other sandbox's page (a crawler that keeps cookies for one redirect chain). A fresh
+      // sandbox couldn't serve it anyway (each seed names its logo anew), and the demo's own
+      // pages only ever ask for media with a cookie they already hold, so no sandbox starts.
+      logSessionStart("cookie_check_media", request);
+      return new Response("Not found", {
+        status: 404,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "private, no-store",
+          vary: "Cookie",
+        },
+      });
+    }
     if (request.method === "GET") {
       // The cookie came back: on to the address the visitor asked for.
       logSessionStart("cookie_check", request);
