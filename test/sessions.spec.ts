@@ -230,6 +230,46 @@ describe("a client that doesn't return the cookie", () => {
     }
   });
 
+  it("refuses media carrying the check for any method, starting no sandbox", async () => {
+    const headers = { "cf-connecting-ip": "192.0.2.96" };
+    const first = await SELF.fetch(`${BASE}/media/branding/logo/1794692474422-4057d7fc`, {
+      headers,
+      redirect: "manual",
+    });
+    expect(first.status).toBe(303);
+    const set = first.headers.get("set-cookie");
+    const cookie = (set ?? "").split(";")[0] ?? "";
+    const check = new URL(first.headers.get("location") ?? "", BASE);
+    for (const method of ["HEAD", "POST"]) {
+      const res = await SELF.fetch(check, {
+        method,
+        headers: { ...headers, cookie },
+        redirect: "manual",
+      });
+      expect(res.status, method).toBe(404);
+      expect(res.headers.get("cache-control"), method).toBe("private, no-store");
+      await res.arrayBuffer();
+    }
+    expect(await started(await sandboxOf(set))).toBe(false);
+  });
+
+  it("refuses media carrying the check even for a visitor whose sandbox runs", async () => {
+    // The Worker can't tell a running sandbox from none without starting it, so a media URL
+    // that still carries the check (copied from a redirect, say) is a 404 for everyone,
+    // and the same URL without it is served as usual (DESIGN.md, "Session identity").
+    const v = visitor();
+    const page = await v.fetch("/");
+    expect(page.status).toBe(200);
+    await page.arrayBuffer();
+    const cover = "/media/posts/5eed0002-0000-4000-8000-000000000002/kestrel.webp";
+    const checked = await v.fetch(`${cover}?${COOKIE_CHECK_PARAM}=1`);
+    expect(checked.status).toBe(404);
+    await checked.arrayBuffer();
+    const plain = await v.fetch(cover);
+    expect(plain.status).toBe(200);
+    await plain.arrayBuffer();
+  });
+
   it("costs nothing when it arrives already carrying the cookie check", async () => {
     // A redirect target that was shared or crawled: no cookie, no new one, no rate limit.
     const ip = "192.0.2.121";
