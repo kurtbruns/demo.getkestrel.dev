@@ -99,10 +99,18 @@ export const NO_BODY = { "sec-fetch-site": "same-origin", "kestrel-client": "edi
 
 /** `size` bytes that open as a 1 x 1 PNG. Since Kestrel 1.21.0 an upload's format is read from
  *  its bytes, by its signature alone, and Kestrel reads the size from the IHDR that follows,
- *  where it stores a width and height that must be above 0. Nothing decodes the rest. */
+ *  where it stores a width and height that must be above 0. Since 1.26.0 Kestrel also walks the
+ *  file's chunks to strip its metadata, refusing a file it can't walk, so whatever follows the
+ *  IHDR is one `IDAT` chunk cut short at `size`: a truncated file, which it stores as sent, byte
+ *  for byte, with no metadata to remove. Nothing decodes the pixels. */
 export function png(size = 32): Uint8Array {
   const bytes = new Uint8Array(size);
   bytes.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const idat = 8 + 12 + 13; // after the signature and the IHDR chunk
+  if (size >= idat + 8) {
+    new DataView(bytes.buffer).setUint32(idat, size - idat);
+    bytes.set([73, 68, 65, 84], idat + 4); // "IDAT", stating a length past the end
+  }
   return bytes;
 }
 
