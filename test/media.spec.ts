@@ -57,6 +57,10 @@ describe("seed images", () => {
   it("are served in every sandbox from one shared copy", async () => {
     const a = visitor();
     const b = visitor();
+    // A page first, as a real visitor's media requests come from one: a session's first
+    // request for media never starts a sandbox (src/index.ts).
+    await (await a.fetch("/")).arrayBuffer();
+    await (await b.fetch("/")).arrayBuffer();
     const fromA = await a.fetch(COVER);
     const fromB = await b.fetch(COVER);
     expect(fromA.status).toBe(200);

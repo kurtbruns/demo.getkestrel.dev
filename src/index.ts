@@ -126,9 +126,14 @@ function isOwnPageFetch(request: Request): boolean {
 
 /** Who started a session, for checking in the logs which clients still start sandboxes. */
 function logSessionStart(via: string, request: Request): void {
+  logClient("demo.session_started", via, request);
+}
+
+/** A client's request, by the headers that tell which clients they are. */
+function logClient(event: string, via: string, request: Request): void {
   const h = request.headers;
   // biome-ignore lint/suspicious/noConsole: the Worker's log line for a session's first request.
-  console.log("demo.session_started", {
+  console.log(event, {
     via,
     path: new URL(request.url).pathname,
     ua: h.get("user-agent"),
@@ -318,6 +323,24 @@ async function route(request: Request, env: Env): Promise<Response> {
       return new Response(null, { status: 303, headers });
     }
   } else if (checking) {
+    if (url.pathname.startsWith("/media/")) {
+      // A session's first request is for media: in practice a client fetching a URL it saw
+      // in another sandbox's page (a crawler that keeps cookies for one redirect chain),
+      // whose logo a fresh sandbox can't serve, since each seed names its logo anew. The
+      // demo's own pages only ask for media with a cookie they already hold, so a sandbox
+      // never starts on a media request. The cost (DESIGN.md, "Session identity"): a shared
+      // seed image's URL opened in a browser new to the demo is a 404 rather than the image,
+      // as is a media URL that still carries the check, sandbox or not.
+      logClient("demo.media_refused", "cookie_check", request);
+      return new Response("Not found", {
+        status: 404,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "private, no-store",
+          vary: "Cookie",
+        },
+      });
+    }
     if (request.method === "GET") {
       // The cookie came back: on to the address the visitor asked for.
       logSessionStart("cookie_check", request);
