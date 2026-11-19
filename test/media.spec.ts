@@ -149,6 +149,36 @@ describe("uploads", () => {
     await cover.arrayBuffer();
   });
 
+  it("are stored without their metadata, counted and listed at the size stored", async () => {
+    // Since Kestrel 1.26.0 an upload's metadata is stripped before `put`, and the image routes
+    // read each image's size from `MEDIA.list`, which lists the sandbox's own objects.
+    const a = visitor();
+    const b = visitor();
+    await (await b.fetch("/api/posts")).arrayBuffer(); // B has a sandbox of its own
+    const draft = await aDraft(a);
+    const text = new Uint8Array(12 + 8);
+    new DataView(text.buffer).setUint32(0, 8);
+    text.set([...new TextEncoder().encode("tEXtGPS:here")], 4);
+    const plain = png(33); // the signature and a whole IHDR
+    const iend = [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+    const res = await upload(a, draft, "tagged.png", new Uint8Array([...plain, ...text, ...iend]));
+    expect(res.status).toBe(201);
+    const stored = [...plain, ...iend];
+    const { image } = (await res.json()) as { image: { bytes: number } };
+    expect(image.bytes).toBe(stored.length);
+    expect(await bytesOf(await a.fetch(`/media/posts/${draft}/tagged.png`))).toEqual(stored);
+    const used = await runInDurableObject(await a.sandbox(), (i) => i.media.usedBytes());
+    expect(used).toBe(stored.length);
+    const listed = await a.json<{ images: { filename: string; bytes: number | null }[] }>(
+      `/api/posts/${draft}/images`,
+    );
+    expect(listed.body.images).toEqual([
+      expect.objectContaining({ filename: "tagged.png", bytes: stored.length }),
+    ]);
+    const other = await b.json<{ images: unknown[] }>(`/api/posts/${draft}/images`);
+    expect(other.body.images).toEqual([]);
+  });
+
   it("over the per-object cap are refused with a 413, and nothing is written", async () => {
     const a = visitor();
     const draft = await aDraft(a);

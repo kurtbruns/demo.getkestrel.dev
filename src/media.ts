@@ -18,8 +18,9 @@
  * nothing is written. The size is reserved before the bytes go to R2, so uploads running in
  * parallel (a DO serves other requests while it awaits R2) can't pass the cap together.
  *
- * Kestrel uses `get`, `put` (with `httpMetadata`) and `delete`; `head` and `list` are here
- * for the demo's own use, and `list` stays inside the sandbox's prefix.
+ * Kestrel uses `get`, `put` (with `httpMetadata`), `delete`, and `list` (an image's size, since
+ * Kestrel 1.26.0); `head` is here for the demo's own use. `list` stays inside the sandbox's
+ * prefix, so a shared seed image is not in it.
  */
 
 import { HttpError } from "kestrel";
