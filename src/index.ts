@@ -170,13 +170,17 @@ export function rateLimitKey(ip: string | null): string {
  * A sandbox's response, made safe to send: no shared cache may keep it (Kestrel marks its
  * public pages and media `public`, but here every page is one visitor's own), its HTML is
  * always revalidated, and a response that starts a session (the dashboard's first call,
- * which skips the cookie check) is never stored at all, since it carries the cookie.
+ * which skips the cookie check) is never stored at all, since it carries the cookie. Nor is
+ * one carrying a cookie of Kestrel's own: since Kestrel 1.27.0 the subscribe form's answer
+ * sets one and the confirm page clears it, on pages Kestrel marks `no-store`.
  */
 function privately(response: Response, newCookie?: string): Response {
   const out = new Response(response.body, response);
-  if (newCookie) {
+  if (newCookie || out.headers.has("set-cookie")) {
     out.headers.set("cache-control", "private, no-store");
-    out.headers.append("set-cookie", sessionCookie(newCookie));
+    if (newCookie) {
+      out.headers.append("set-cookie", sessionCookie(newCookie));
+    }
   } else if (out.headers.get("content-type")?.startsWith("text/html")) {
     // A sandbox's pages change under the visitor (an edit, a reset, the idle wipe), so the
     // browser revalidates them rather than showing a stale copy for Kestrel's 5 to 60

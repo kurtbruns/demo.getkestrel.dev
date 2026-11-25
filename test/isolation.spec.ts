@@ -6,7 +6,8 @@
 // A list imported in one sandbox (since Kestrel v1.9.0) is likewise absent from another's
 // export and subscriber list, and a block or an erasure (since v1.10.0) suppresses the
 // address in its own sandbox only. An email-only post's unlisted link (since v1.12.0) is
-// likewise its own sandbox's page and nothing in another.
+// likewise its own sandbox's page and nothing in another. A confirmation link (one-click since
+// v1.27.0, by a second cookie) confirms only in its own sandbox, whatever cookie comes with it.
 //
 // Related tests elsewhere: an upload in one sandbox 404s in another at the same path, and a
 // replaced or removed logo stays in its own sandbox (test/media.spec.ts); a forged or
@@ -354,5 +355,100 @@ describe("noindex", () => {
     expect(refused?.status).toBe(429);
     expect(refused?.headers.get("x-robots-tag")).toBe("noindex");
     await refused?.arrayBuffer();
+  });
+});
+
+describe("a confirmation link, and the cookie that makes it one click (since Kestrel 1.27.0)", () => {
+  const CONFIRM_COOKIE = "kestrel_confirm";
+  const a = visitor();
+  const b = visitor();
+  const email = `reader-${crypto.randomUUID()}@example.com`;
+  let token = "";
+
+  const statusIn = async (v: Visitor): Promise<string | undefined> => {
+    const res = await v.json<{ subscribers?: { status: string }[] }>(
+      `/api/subscribers?email=${encodeURIComponent(email)}`,
+    );
+    return res.body.subscribers?.[0]?.status;
+  };
+
+  beforeAll(async () => {
+    await a.fetch("/subscribe");
+    await b.fetch("/subscribe");
+  });
+
+  it("sets Kestrel's cookie beside the session's, on a page no cache keeps", async () => {
+    const session = a.cookie;
+    const res = await a.fetch("/subscribe", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ email }),
+    });
+    expect(res.status).toBe(200);
+    await res.arrayBuffer();
+    const set = res.headers.getSetCookie();
+    expect(set).toHaveLength(1);
+    expect(set[0]).toMatch(/^kestrel_confirm=[0-9a-f]{64}; .*Path=\/confirm; HttpOnly/);
+    // Kestrel says no-store on every response that sets or clears it, and the Worker keeps
+    // that, where it would make any other page of a sandbox's `private, no-cache`.
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("vary")).toMatch(/cookie/i);
+    // The session is the one it was, and still selects A's sandbox, where the reader now waits.
+    expect(a.cookie).toBe(session);
+    expect(a.cookie?.startsWith(`${SESSION_COOKIE}=`)).toBe(true);
+    expect(a.kept.get(CONFIRM_COOKIE)?.path).toBe("/confirm");
+    expect(await statusIn(a)).toBe("pending");
+    expect(await statusIn(b)).toBeUndefined();
+
+    token = await runInDurableObject(await a.sandbox(), (_i, state) =>
+      String(
+        state.storage.sql
+          .exec<{ confirm_token: string }>(
+            "SELECT confirm_token FROM subscribers WHERE email = ?",
+            email,
+          )
+          .one().confirm_token,
+      ),
+    );
+  });
+
+  it("is no link in another sandbox, even with the cookie of the browser that asked", async () => {
+    const asked = a.kept.get(CONFIRM_COOKIE);
+    expect(asked).toBeDefined();
+    if (asked) {
+      b.kept.set(CONFIRM_COOKIE, asked);
+    }
+    const other = await b.fetch(`/confirm?token=${token}`);
+    expect(other.status).toBe(400);
+    expect(await other.text()).not.toContain(email);
+    b.kept.delete(CONFIRM_COOKIE);
+    expect(await statusIn(a)).toBe("pending");
+    expect(await statusIn(b)).toBeUndefined();
+  });
+
+  it("shows only the button to the session without the cookie, and changes nothing", async () => {
+    // The session cookie alone, as a second browser profile given it would send.
+    const res = await SELF.fetch(`${BASE}/confirm?token=${token}`, {
+      headers: { cookie: a.cookie ?? "", "cf-connecting-ip": a.ip },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Finish subscribing");
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(await statusIn(a)).toBe("pending");
+  });
+
+  it("confirms at once in the browser that asked, in its own sandbox only", async () => {
+    const session = a.cookie;
+    const own = await a.fetch(`/confirm?token=${token}`);
+    expect(own.status).toBe(200);
+    await own.arrayBuffer();
+    expect(own.headers.get("cache-control")).toBe("private, no-store");
+    // Kestrel clears its own cookie and leaves the session's alone.
+    expect(own.headers.getSetCookie()).toHaveLength(1);
+    expect(own.headers.getSetCookie()[0]).toMatch(/^kestrel_confirm=; Max-Age=0; /);
+    expect(a.kept.has(CONFIRM_COOKIE)).toBe(false);
+    expect(a.cookie).toBe(session);
+    expect(await statusIn(a)).toBe("confirmed");
+    expect(await statusIn(b)).toBeUndefined();
   });
 });
