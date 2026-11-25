@@ -1,7 +1,7 @@
 {
   "patches": {
     "0001-demo-auth": {
-      "why": "Every request is the demo's one human principal (demo@getkestrel.dev, via \"demo\"), so a spec that expects a 401 without a credential, a 400/403/404 that only comes after a refused sign-in, the dev or Access auth mode, or a named person or service token as who acted (whoami, a revision's author, an import's or a send's actor, an action log line, an MCP tool call, Resolve's audit note) gets the demo principal instead.",
+      "why": "Every request is the demo's one human principal (demo@getkestrel.dev, via \"demo\"), so a spec that expects a 401 without a credential, a 400/403/404 that only comes after a refused sign-in, the 503 for Access keys that can't be fetched or the auth.refused log line a refused Access sign-in writes, the dev or Access auth mode, or a named person or service token as who acted (whoami, a revision's author, an import's or a send's actor, an action log line, an MCP tool call, Resolve's audit note) gets the demo principal instead.",
       "specs": {
         "test/action_logs.spec.ts": [
           "an action's line says who took it (SPEC §12) a schedule by a service token",
@@ -30,7 +30,13 @@
           "the admin 401 says when no Access is configured offers none where the dev routes are absent (SPEC §11)",
           "the auth mode follows how the request signed in reports access for a request signed in through Access, in whoami and the settings reflection",
           "the auth mode follows how the request signed in verifies a sign-in when the team domain was stored with its scheme and a trailing slash",
-          "the auth mode follows how the request signed in reports dev for the dev token in the settings reflection"
+          "the auth mode follows how the request signed in reports dev for the dev token in the settings reflection",
+          "a refused Access sign-in says why in the log answers 401 to a token for another audience, and logs auth.refused with reason audience (SPEC §11)",
+          "a refused Access sign-in says why in the log answers 503 with retry_after when the team's keys can't be fetched, and logs reason jwks_unreachable (SPEC §11)",
+          "a refused Access sign-in says why in the log logs nothing for a request with no Access assertion, or one that verifies",
+          "a refused Access sign-in says why in the log logs one auth.refused line, reason unidentified, with its claim names, for a sign-in that names no one (SPEC §11)",
+          "a refused Access sign-in says why in the log logs reason not_allowed, without the email, for a verified person the allowlist leaves out, and nothing more (SPEC §12)",
+          "a refused Access sign-in says why in the log names an expired, a not-yet-valid, a foreign-issuer, a wrongly signed, and a malformed token each by its reason, with a 401 and nothing of the token (SPEC §12)"
         ],
         "test/cross_site.spec.ts": [
           "Sec-Fetch-Site on an admin write answers an unauthenticated cross-site write with the gate's 401"
@@ -63,6 +69,7 @@
           "a tool call runs its routes as the person, via Claude (SPEC §11, Who acted) resolves a stuck send only with the resolution the call names, never a default (SPEC §12)",
           "a tool call runs its routes as the person, via Claude (SPEC §11, Who acted) plans an import before committing, and never gives the attestation for the person",
           "a tool call runs its routes as the person, via Claude (SPEC §11, Who acted) reads the publication: who is signed in, and its identity, provider, and list",
+          "a tool call runs its routes as the person, via Claude (SPEC §11, Who acted) answers each act on a send with the send whole, so its actions and listing need no second read",
           "the server's door (SPEC §11) refuses a request with no credential before any tool runs",
           "each initialize is one line of what the client says it is (SPEC §12) names a service token's kind and not the token"
         ],

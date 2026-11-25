@@ -1,4 +1,5 @@
-// A test visitor: a browser stand-in that keeps the session cookie the Worker sets and
+// A test visitor: a browser stand-in that keeps the session cookie the Worker sets, and any
+// other cookie a sandbox's Kestrel sets, each sent back only under its own path, and
 // comes from its own IP, so tests share neither a sandbox nor a rate-limit bucket unless
 // they mean to. Like a browser, it follows the first-visit redirect with the cookie it was
 // just given, so a test's first request is answered by the visitor's new sandbox.
@@ -15,6 +16,9 @@ export interface Visitor {
   readonly ip: string;
   /** The `name=value` of the session cookie, once the Worker has set one. */
   cookie: string | undefined;
+  /** Every other cookie this visitor holds, by name: since Kestrel 1.27.0 the subscribe form
+   *  sets one (`kestrel_confirm`, `Path=/confirm`), beside the session's and never in its place. */
+  readonly kept: Map<string, { value: string; path: string }>;
   fetch(path: string, init?: RequestInit): Promise<Response>;
   json<T>(path: string, init?: RequestInit): Promise<{ status: number; body: T }>;
   /** This visitor's sandbox Durable Object, for inspecting its storage. */
@@ -25,17 +29,36 @@ export function visitor(ip = `198.51.100.${++ips}`): Visitor {
   const v: Visitor = {
     ip,
     cookie: undefined,
+    kept: new Map(),
     async fetch(path, init = {}) {
       const send = async (url: string, opts: RequestInit) => {
         const headers = new Headers(opts.headers);
         headers.set("cf-connecting-ip", ip);
-        if (v.cookie) {
-          headers.set("cookie", v.cookie);
+        const { pathname } = new URL(url);
+        const jar = [
+          ...(v.cookie ? [v.cookie] : []),
+          ...[...v.kept]
+            .filter(([, kept]) => pathname.startsWith(kept.path))
+            .map(([name, kept]) => `${name}=${kept.value}`),
+        ];
+        if (jar.length > 0) {
+          headers.set("cookie", jar.join("; "));
         }
         const res = await SELF.fetch(url, { ...opts, headers });
-        const set = res.headers.get("set-cookie");
-        if (set) {
-          v.cookie = set.split(";")[0];
+        for (const set of res.headers.getSetCookie()) {
+          const [pair = "", ...attributes] = set.split(";").map((part) => part.trim());
+          const name = pair.slice(0, pair.indexOf("="));
+          if (name === SESSION_COOKIE) {
+            v.cookie = pair;
+          } else if (attributes.some((attribute) => /^max-age=0$/i.test(attribute))) {
+            v.kept.delete(name);
+          } else {
+            const path = attributes.find((attribute) => /^path=/i.test(attribute));
+            v.kept.set(name, {
+              value: pair.slice(name.length + 1),
+              path: path?.slice("path=".length) ?? "/",
+            });
+          }
         }
         return res;
       };

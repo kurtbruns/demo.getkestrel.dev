@@ -1,12 +1,15 @@
-Demo auth (kurtbruns/demo.getkestrel.dev#2, regenerated for Kestrel 1.7.0 in #31, for 1.13.0, for 1.14.0, and for 1.23.0)
+Demo auth (kurtbruns/demo.getkestrel.dev#2, regenerated for Kestrel 1.7.0 in #31, for 1.13.0, for 1.14.0, for 1.23.0, and for 1.27.0)
 
 What: `authenticate` (src/auth/middleware.ts) returns a fixed human principal,
 demo@getkestrel.dev, for every request, without consulting Access or the dev token. Its
 `via` is "demo": the principal's `via` union (src/router.ts) and the auth-mode types that
 carry it (`auth_mode` in shared/settings.ts, whoami's `auth.mode` in shared/who_acted.ts,
 which the client's session is, and the curl snippet) accept "demo". `authenticate` keeps
-Kestrel's return type (`Principal | "access_unidentified" | null`) though it only ever
-returns the principal, since `requireAuth` tests for the other two. The principal names no
+Kestrel's return type (`Principal | "access_unidentified" | "access_unreachable" | null`,
+the third since Kestrel 1.27.0) though it only ever returns the principal, since
+`requireAuth` tests for the other three. So the 401s, the 503 `access_unreachable`, and the
+`auth.refused` log line (written in src/auth/access.ts, which is no longer called) never
+happen in a sandbox. The principal names no
 client, so `requireAuth` adds the request's `Kestrel-Client` header to it as it does for
 any person. Since Kestrel 1.7.0, `GET /api/whoami`'s `auth.mode` and the settings reflection's
 `auth_mode` report the principal's `via`, so both say "demo" with no change of their own.
@@ -46,10 +49,10 @@ index fd1f393..426d01b 100644
      ? [
          '-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"',
 diff --git a/client/settings/deploy.ts b/client/settings/deploy.ts
-index 551bd93..3bb60e3 100644
+index 1475961..1e2f375 100644
 --- a/client/settings/deploy.ts
 +++ b/client/settings/deploy.ts
-@@ -134,7 +134,7 @@ export function instanceSection(page: SettingsPage): Html {
+@@ -154,7 +154,7 @@ export function deploymentSection(page: SettingsPage): Html {
            <div class="set-kv-k">App origin</div><div class="set-kv-v"><span class="mono">${d.app_origin}</span></div>
            <div class="set-kv-k">Archive URL base</div><div class="set-kv-v"><span class="mono">${archiveBase}</span>${archiveIsDefault ? html`<span class="set-pill">default: app origin</span>` : null}</div>
            <div class="set-kv-k">Image URL base</div><div class="set-kv-v"><span class="mono">${d.media_public_base}</span></div>
@@ -59,10 +62,10 @@ index 551bd93..3bb60e3 100644
            <div class="set-kv-k">Minimum lead</div><div class="set-kv-v">${formatLead(d.min_lead_ms)}${d.min_lead_ms === DEFAULT_MIN_LEAD_MS ? html`<span class="set-pill">default</span>` : null}</div>
          </div>
 diff --git a/shared/settings.ts b/shared/settings.ts
-index 3f85c1d..c49d4b1 100644
+index 2fb08a3..b509878 100644
 --- a/shared/settings.ts
 +++ b/shared/settings.ts
-@@ -195,7 +195,7 @@ export interface DeploymentView {
+@@ -258,7 +258,7 @@ export interface DeploymentView {
    aws_region: string;
    access_configured: boolean;
    /** How the reader of this reflection signed in: through Access, or with the local dev token. */
@@ -83,15 +86,16 @@ index 20928f7..60dffd6 100644
 +  auth: { mode: "access" | "dev" | "demo" };
  }
 diff --git a/src/auth/middleware.ts b/src/auth/middleware.ts
-index 843e3cb..c1fdeb1 100644
+index 671df5c..0bc6440 100644
 --- a/src/auth/middleware.ts
 +++ b/src/auth/middleware.ts
-@@ -22,32 +22,26 @@ import type { AppEnv, Config } from "../env";
- import { fieldError } from "../lib/body";
+@@ -25,32 +25,27 @@ import { fieldError } from "../lib/body";
  import { json } from "../lib/errors";
+ import { REFUSAL_STATUS } from "../reference/refusals";
  import type { Middleware, Principal } from "../router";
--import { ACCESS_JWT_HEADER, verifyAccessJwt } from "./access";
+-import { ACCESS_JWT_HEADER, type Unreachable, verifyAccessJwt } from "./access";
 -import { verifyDevToken } from "./dev_token";
++import type { Unreachable } from "./access";
 +
 +/**
 + * Demo sandbox (patched by demo.getkestrel.dev): every request is the sandbox's publisher.
@@ -112,7 +116,7 @@ index 843e3cb..c1fdeb1 100644
    _env: AppEnv,
 -  config: Config,
 +  _config: Config,
- ): Promise<Principal | "access_unidentified" | null> {
+ ): Promise<Principal | "access_unidentified" | Unreachable | null> {
 -  const jwt = req.headers.get(ACCESS_JWT_HEADER);
 -  if (jwt) {
 -    const p = await verifyAccessJwt(jwt, config);
